@@ -20,8 +20,9 @@ const smsBase = createChannelPluginBase({
       "- SMS/MMS channel: plain text replies only. No markdown (no *, **, #, >, `, etc.).",
       "- Keep replies concise — 160-char SMS limit; long replies split across multiple messages.",
       "- Inbound MMS appears as [MMS received] with MIME type, filename, size, and saved path per part.",
-      "- To send an MMS (image, audio, video) to the peer: call mms-http-send <peer_number> <file_path> as a tool.",
-      "- Plain text replies are delivered as SMS automatically — do not call sms-send directly.",
+      "- To send a proactive SMS/MMS to a phone number: use the message tool with channel='termux-sms', not channel='sms'.",
+      "- To send an MMS attachment (image, audio, video): call mms-http-send <peer_number> <file_path> as a tool.",
+      "- Plain text replies in an active conversation are delivered as SMS automatically — do not call sms-send directly.",
       "- For slash commands, reply with one concise plain-text line unless help was explicitly requested.",
     ],
   },
@@ -69,5 +70,14 @@ const smsBase = createChannelPluginBase({
 });
 
 export const smsPlugin = createChatChannelPlugin({
-  base: smsBase,
+  base: {
+    ...smsBase,
+    // Polling channels have no persistent connection to signal — keep a pending
+    // Promise so the health-monitor sees running=true and stops restarting us.
+    startAccount: async ({ abortSignal }) => {
+      await new Promise((resolve) => {
+        abortSignal.addEventListener("abort", resolve, { once: true });
+      });
+    },
+  },
 });
