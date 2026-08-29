@@ -138,8 +138,8 @@ async function pollSms(runtime) {
 
     const canonicalReplyTo = resolveSecondary(sender, smsCfg);
     if (canonicalReplyTo) {
-      const warn = String(smsCfg.secondaryWarning ?? "secondary channel in use").trim();
-      sendSms(sender, warn).catch(() => {});
+      const warn = String(smsCfg.secondaryWarning ?? "").trim();
+      if (warn) sendSms(sender, warn).catch(() => {});
     } else if (!isAllowed(sender, smsCfg)) {
       const reject = String(smsCfg.rejectMessage ?? "").trim();
       if (reject) sendSms(sender, reject).catch(() => {});
@@ -149,7 +149,7 @@ async function pollSms(runtime) {
     const replyTo    = canonicalReplyTo ?? sender;
     const timestamp  = new Date(typeof msg.date === "number" ? msg.date : Date.now());
     const agentBody  = canonicalReplyTo
-      ? `[FYI: message received via secondary source ${sender} — ignore unless relevant]\n${body}`
+      ? `[FYI: message from secondary source ${sender} — channel routes reply to primary ${canonicalReplyTo} — respond normally]\n${body}`
       : body;
 
     try {
@@ -241,8 +241,8 @@ async function pollMms(runtime) {
 
     const canonicalReplyTo = resolveSecondary(sender, smsCfg);
     if (canonicalReplyTo) {
-      const warn = String(smsCfg.secondaryWarning ?? "secondary channel in use").trim();
-      sendSms(sender, warn).catch(() => {});
+      const warn = String(smsCfg.secondaryWarning ?? "").trim();
+      if (warn) sendSms(sender, warn).catch(() => {});
     } else if (!isAllowed(sender, smsCfg)) {
       const reject = String(smsCfg.rejectMessage ?? "").trim();
       if (reject) sendSms(sender, reject).catch(() => {});
@@ -261,7 +261,7 @@ async function pollMms(runtime) {
     const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
     const timestamp = new Date(mms.date * 1000);
     const agentBody = canonicalReplyTo
-      ? `[FYI: MMS received via secondary source ${sender} — ignore unless relevant]\n${body}`
+      ? `[FYI: MMS from secondary source ${sender} — channel routes reply to primary ${canonicalReplyTo} — respond normally]\n${body}`
       : body;
 
     try {
