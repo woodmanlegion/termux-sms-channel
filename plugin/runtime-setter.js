@@ -164,7 +164,8 @@ function formatMmsParts(parts) {
     const size = p.size ? ` (${(p.size / 1024).toFixed(1)} KB)` : "";
     const path = p.saved_path ? `\n    saved: ${p.saved_path}` : "";
     const text = p.text ? `\n    text: ${p.text.slice(0, 200)}` : "";
-    return `  - ${p.mime}${p.name ? " " + p.name : ""}${size}${path}${text}`;
+    const err  = p.error ? `\n    [file unavailable — may have expired in telephony storage]` : "";
+    return `  - ${p.mime}${p.name ? " " + p.name : ""}${size}${path}${text}${err}`;
   }).join("\n");
 }
 
@@ -186,13 +187,17 @@ async function pollMms(runtime) {
 
   let messages;
   try {
-    const { stdout } = await execFileP(
+    const { stdout, stderr } = await execFileP(
       MMS_RECEIVE,
-      ["--since", String(state.mmsHighWater), "--save", mediaDir, "--json"],
-      { timeout: 30_000 }
+      ["--since", String(state.mmsHighWater), "--limit", "3", "--oldest-first", "--save", mediaDir, "--json"],
+      { timeout: 120_000 }
     );
+    if (stderr) process.stderr.write(`[termux-channel] mms-receive stderr: ${stderr}\n`);
     messages = JSON.parse(stdout);
-  } catch { return; }
+  } catch (err) {
+    process.stderr.write(`[termux-channel] mms-receive failed: ${err?.message ?? err}\n`);
+    return;
+  }
 
   if (!messages.length) return;
 
