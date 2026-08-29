@@ -5,7 +5,7 @@ const smsConfig = createTopLevelChannelConfigBase({
   sectionKey: "termux-sms",
   resolveAccount: (cfg) => cfg?.channels?.["termux-sms"] ?? {},
   deleteMode: "clear-fields",
-  clearBaseFields: ["myNumber", "allowFrom", "pollIntervalMs", "mediaDir", "hookScript"],
+  clearBaseFields: ["myNumber", "allowFrom", "pollIntervalMs", "mediaDir", "hookScript", "secondaryFrom", "secondaryWarning", "rejectMessage"],
 });
 
 const smsBase = createChannelPluginBase({
@@ -61,6 +61,32 @@ const smsBase = createChannelPluginBase({
         key: "hookScript",
         label: "Media hook script",
         description: "Optional script called per received MMS part: <script> <mime> <saved_path>. Absent = file-drop only.",
+        type: "string",
+        required: false,
+      },
+      {
+        key: "secondaryFrom",
+        label: "Secondary source numbers",
+        // Dual-SIM / multi-number: messages from these numbers are processed as
+        // owner commands but replies go to the primary allowFrom number, and a
+        // warning is sent back to the secondary number. Useful when the same
+        // person reaches the channel from a second SIM or a number retained for
+        // two-factor accounts. Not a general multi-user feature.
+        description: "Comma-separated numbers treated as the owner. Replies go to allowFrom; a warning is sent back to the secondary number.",
+        type: "string",
+        required: false,
+      },
+      {
+        key: "secondaryWarning",
+        label: "Secondary source warning",
+        description: "Message sent back when a secondary number is used. Default: 'secondary channel in use'.",
+        type: "string",
+        required: false,
+      },
+      {
+        key: "rejectMessage",
+        label: "Rejection message",
+        description: "Reply sent to numbers not in allowFrom or secondaryFrom. Empty = silent drop (default).",
         type: "string",
         required: false,
       },

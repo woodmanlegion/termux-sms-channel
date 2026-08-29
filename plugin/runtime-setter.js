@@ -72,6 +72,20 @@ function isAllowed(sender, smsConfig) {
   return allowed.length === 0 || allowed.includes(sender);
 }
 
+// Returns the canonical reply-to number for a secondary source, or null if the
+// sender is not a secondary source. Secondary sources are treated as the owner
+// (messages are processed normally) but replies go to the primary allowFrom
+// number and a warning is sent back to the secondary number.
+// Intended for dual-SIM / multi-number scenarios where the same person uses
+// more than one phone number to reach the channel.
+function resolveSecondary(sender, smsConfig) {
+  if (!smsConfig.secondaryFrom) return null;
+  const secondary = String(smsConfig.secondaryFrom).split(",").map(s => s.trim()).filter(Boolean);
+  if (!secondary.includes(sender)) return null;
+  const canonical = String(smsConfig.allowFrom ?? "").split(",")[0].trim();
+  return canonical || null;
+}
+
 function getConfig(runtime) {
   return runtime?.config?.current?.() ?? {};
 }
@@ -121,31 +135,41 @@ async function pollSms(runtime) {
     const sender = String(msg.number ?? msg.address ?? "").trim();
     const body   = String(msg.body ?? "").trim();
     if (!sender || !body) continue;
-    if (!isAllowed(sender, smsCfg)) continue;
 
-    const timestamp = new Date(typeof msg.date === "number" ? msg.date : Date.now());
+    const canonicalReplyTo = resolveSecondary(sender, smsCfg);
+    if (canonicalReplyTo) {
+      const warn = String(smsCfg.secondaryWarning ?? "secondary channel in use").trim();
+      sendSms(sender, warn).catch(() => {});
+    } else if (!isAllowed(sender, smsCfg)) {
+      const reject = String(smsCfg.rejectMessage ?? "").trim();
+      if (reject) sendSms(sender, reject).catch(() => {});
+      continue;
+    }
+
+    const replyTo    = canonicalReplyTo ?? sender;
+    const timestamp  = new Date(typeof msg.date === "number" ? msg.date : Date.now());
 
     try {
       await dispatchInboundDirectDmWithRuntime({
         cfg,
         channel: "termux-sms",
         accountId: "default",
-        peer: sender,
+        peer: replyTo,
         runtime,
         channelLabel: "SMS",
-        conversationLabel: sender,
+        conversationLabel: replyTo,
         rawBody: body,
         bodyForAgent: body,
         commandBody: body,
         commandAuthorized: body.startsWith("/"),
         senderAddress: myNumber,
-        recipientAddress: sender,
+        recipientAddress: replyTo,
         senderId: sender,
         messageId: String(id),
         timestamp,
         deliver: async (payload) => {
           const text = String(payload?.text ?? "").trim();
-          if (text) await sendSms(sender, text);
+          if (text) await sendSms(replyTo, text);
           return {};
         },
       });
@@ -211,7 +235,18 @@ async function pollMms(runtime) {
 
     const sender = String(mms.sender ?? "").trim();
     if (!sender) continue;
-    if (!isAllowed(sender, smsCfg)) continue;
+
+    const canonicalReplyTo = resolveSecondary(sender, smsCfg);
+    if (canonicalReplyTo) {
+      const warn = String(smsCfg.secondaryWarning ?? "secondary channel in use").trim();
+      sendSms(sender, warn).catch(() => {});
+    } else if (!isAllowed(sender, smsCfg)) {
+      const reject = String(smsCfg.rejectMessage ?? "").trim();
+      if (reject) sendSms(sender, reject).catch(() => {});
+      continue;
+    }
+
+    const replyTo = canonicalReplyTo ?? sender;
 
     // Fire hook stubs per part (best-effort, non-blocking)
     for (const part of mms.parts) {
@@ -228,22 +263,22 @@ async function pollMms(runtime) {
         cfg,
         channel: "termux-sms",
         accountId: "default",
-        peer: sender,
+        peer: replyTo,
         runtime,
         channelLabel: "SMS",
-        conversationLabel: sender,
+        conversationLabel: replyTo,
         rawBody: body,
         bodyForAgent: body,
         commandBody: body,
         commandAuthorized: false,
         senderAddress: myNumber,
-        recipientAddress: sender,
+        recipientAddress: replyTo,
         senderId: sender,
         messageId: `mms-${mms.id}`,
         timestamp,
         deliver: async (payload) => {
           const text = String(payload?.text ?? "").trim();
-          if (text) await sendSms(sender, text);
+          if (text) await sendSms(replyTo, text);
           return {};
         },
       });
