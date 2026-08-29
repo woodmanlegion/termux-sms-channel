@@ -1,0 +1,16 @@
+# config.example — openclaw-termux-channel
+# Channel config lives in openclaw.json, not a separate file.
+# Real numbers go in openclaw.json only — never commit them.
+#
+# openclaw config patch --inline '{
+#   "channels": {
+#     "termux-sms": {
+#       "enabled": true,
+#       "myNumber":       "+15550000000",   # your SIM E.164 number
+#       "allowFrom":      "+15558675309",   # comma-separated allowlist; empty = allow all
+#       "pollIntervalMs": 5000,             # poll interval ms
+#       "mediaDir":       "~/.openclaw/workspace/media/inbound",
+#       "hookScript":     ""               # optional: path to per-part hook script
+#     }
+#   }
+# }'
