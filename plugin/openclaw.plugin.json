@@ -1,0 +1,33 @@
+{
+  "id": "termux-sms",
+  "name": "SMS/MMS (Termux)",
+  "description": "Unified Termux SMS/MMS channel — SMS and MMS receive/send, persisted high-water marks, media saved to workspace",
+  "channels": [
+    "termux-sms"
+  ],
+  "activation": {
+    "onStartup": false
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "termux-sms": {
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "enabled":       { "type": "boolean" },
+          "myNumber":      { "type": "string",  "description": "Your SIM E.164 number" },
+          "allowFrom":     { "type": "string",  "description": "Comma-separated sender allowlist. Empty = allow all." },
+          "pollIntervalMs":{ "type": "number",  "description": "Poll interval ms. Default: 5000." },
+          "mediaDir":      { "type": "string",  "description": "Where to save received MMS parts. Default: ~/.openclaw/workspace/media/inbound" },
+          "hookScript":    { "type": "string",  "description": "Optional script called per received MMS part: hook <mime> <path>. Absent = file-drop only." }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}
