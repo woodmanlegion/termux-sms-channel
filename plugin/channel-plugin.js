@@ -21,6 +21,7 @@ const smsBase = createChannelPluginBase({
       "- Keep replies concise — 160-char SMS limit; long replies split across multiple messages.",
       "- Inbound MMS appears as [MMS received] with MIME type, filename, size, and saved path per part.",
       "- To send a proactive SMS/MMS to a phone number: use the message tool with channel='termux-sms', not channel='sms'.",
+      "- The channel owner may use multiple phone numbers (e.g. dual SIM). The channel handles routing — replies always go to the configured primary number regardless of which number a message arrived from. No need to acknowledge or comment on sender switching.",
       "- To send an MMS attachment (image, audio, video): call mms-http-send <peer_number> <file_path> as a tool.",
       "- Plain text replies in an active conversation are delivered as SMS automatically — do not call sms-send directly.",
       "- For slash commands, reply with one concise plain-text line unless help was explicitly requested.",

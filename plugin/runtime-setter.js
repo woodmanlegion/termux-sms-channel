@@ -148,9 +148,7 @@ async function pollSms(runtime) {
 
     const replyTo    = canonicalReplyTo ?? sender;
     const timestamp  = new Date(typeof msg.date === "number" ? msg.date : Date.now());
-    const agentBody  = canonicalReplyTo
-      ? `[FYI: message from secondary source ${sender} — channel routes reply to primary ${canonicalReplyTo} — respond normally]\n${body}`
-      : body;
+    const agentBody  = body;
 
     try {
       await dispatchInboundDirectDmWithRuntime({
@@ -261,7 +259,7 @@ async function pollMms(runtime) {
     const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
     const timestamp = new Date(mms.date * 1000);
     const agentBody = canonicalReplyTo
-      ? `[FYI: MMS from secondary source ${sender} — channel routes reply to primary ${canonicalReplyTo} — respond normally]\n${body}`
+      ? body
       : body;
 
     try {
