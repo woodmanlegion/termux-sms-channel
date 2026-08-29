@@ -148,6 +148,9 @@ async function pollSms(runtime) {
 
     const replyTo    = canonicalReplyTo ?? sender;
     const timestamp  = new Date(typeof msg.date === "number" ? msg.date : Date.now());
+    const agentBody  = canonicalReplyTo
+      ? `[FYI: message received via secondary source ${sender} — ignore unless relevant]\n${body}`
+      : body;
 
     try {
       await dispatchInboundDirectDmWithRuntime({
@@ -159,7 +162,7 @@ async function pollSms(runtime) {
         channelLabel: "SMS",
         conversationLabel: replyTo,
         rawBody: body,
-        bodyForAgent: body,
+        bodyForAgent: agentBody,
         commandBody: body,
         commandAuthorized: body.startsWith("/"),
         senderAddress: myNumber,
@@ -257,6 +260,9 @@ async function pollMms(runtime) {
 
     const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
     const timestamp = new Date(mms.date * 1000);
+    const agentBody = canonicalReplyTo
+      ? `[FYI: MMS received via secondary source ${sender} — ignore unless relevant]\n${body}`
+      : body;
 
     try {
       await dispatchInboundDirectDmWithRuntime({
@@ -268,7 +274,7 @@ async function pollMms(runtime) {
         channelLabel: "SMS",
         conversationLabel: replyTo,
         rawBody: body,
-        bodyForAgent: body,
+        bodyForAgent: agentBody,
         commandBody: body,
         commandAuthorized: false,
         senderAddress: myNumber,

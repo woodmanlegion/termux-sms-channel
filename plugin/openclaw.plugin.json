@@ -23,8 +23,11 @@
           "myNumber":      { "type": "string",  "description": "Your SIM E.164 number" },
           "allowFrom":     { "type": "string",  "description": "Comma-separated sender allowlist. Empty = allow all." },
           "pollIntervalMs":{ "type": "number",  "description": "Poll interval ms. Default: 5000." },
-          "mediaDir":      { "type": "string",  "description": "Where to save received MMS parts. Default: ~/.openclaw/workspace/media/inbound" },
-          "hookScript":    { "type": "string",  "description": "Optional script called per received MMS part: hook <mime> <path>. Absent = file-drop only." }
+          "mediaDir":           { "type": "string", "description": "Where to save received MMS parts. Default: ~/.openclaw/workspace/media/inbound" },
+          "hookScript":         { "type": "string", "description": "Optional script called per received MMS part: hook <mime> <path>. Absent = file-drop only." },
+          "secondaryFrom":      { "type": "string", "description": "Comma-separated numbers treated as owner. Replies go to allowFrom; warning sent back to secondary." },
+          "secondaryWarning":   { "type": "string", "description": "Message sent back when a secondary number is used. Default: 'secondary channel in use'." },
+          "rejectMessage":      { "type": "string", "description": "Reply sent to numbers not in allowFrom or secondaryFrom. Empty = silent drop." }
         },
         "additionalProperties": false
       }
