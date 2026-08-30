@@ -1,6 +1,6 @@
 {
   "name": "termux-sms-channel",
-  "version": "1.0.0",
+  "version": "2026.08.29_01",
   "description": "Unified Termux SMS/MMS channel plugin for OpenClaw — SMS receive/send, MMS receive/send, persisted high-water marks, hook stubs for media processing",
   "type": "module",
   "main": "index.js",
