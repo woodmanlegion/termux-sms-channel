@@ -2,14 +2,14 @@ import { createChatChannelPlugin, createChannelPluginBase } from "openclaw/plugi
 import { createTopLevelChannelConfigBase } from "openclaw/plugin-sdk/channel-config-helpers";
 
 const smsConfig = createTopLevelChannelConfigBase({
-  sectionKey: "termux-sms",
-  resolveAccount: (cfg) => cfg?.channels?.["termux-sms"] ?? {},
+  sectionKey: "termux-sms-channel",
+  resolveAccount: (cfg) => cfg?.channels?.["termux-sms-channel"] ?? {},
   deleteMode: "clear-fields",
   clearBaseFields: ["myNumber", "allowFrom", "pollIntervalMs", "mediaDir", "hookScript", "secondaryFrom", "secondaryWarning", "rejectMessage"],
 });
 
 const smsBase = createChannelPluginBase({
-  id: "termux-sms",
+  id: "termux-sms-channel",
   meta: {
     label: "SMS/MMS",
     description: "Send and receive SMS and MMS via Termux",
@@ -20,7 +20,7 @@ const smsBase = createChannelPluginBase({
       "- SMS/MMS channel: plain text replies only. No markdown (no *, **, #, >, `, etc.).",
       "- Keep replies concise — 160-char SMS limit; long replies split across multiple messages.",
       "- Inbound MMS appears as [MMS received] with MIME type, filename, size, and saved path per part.",
-      "- To send a proactive SMS/MMS to a phone number: use the message tool with channel='termux-sms', not channel='sms'.",
+      "- To send a proactive SMS/MMS to a phone number: use the message tool with channel='termux-sms-channel', not channel='sms'.",
       "- The channel owner may use multiple phone numbers (e.g. dual SIM). The channel handles routing — replies always go to the configured primary number regardless of which number a message arrived from. No need to acknowledge or comment on sender switching.",
       "- To send an MMS attachment (image, audio, video): call mms-http-send <peer_number> <file_path> as a tool.",
       "- Plain text replies in an active conversation are delivered as SMS automatically — do not call sms-send directly.",

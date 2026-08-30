@@ -57,7 +57,7 @@ function saveState(state) {
 // ── Runtime store ─────────────────────────────────────────────────────────────
 
 const { setRuntime } = createPluginRuntimeStore({
-  pluginId: "termux-sms",
+  pluginId: "termux-sms-channel",
   errorMessage: "SMS/MMS runtime not initialized",
 });
 
@@ -91,7 +91,7 @@ function getConfig(runtime) {
 }
 
 function getChannelConfig(runtime) {
-  return getConfig(runtime)?.channels?.["termux-sms"] ?? {};
+  return getConfig(runtime)?.channels?.["termux-sms-channel"] ?? {};
 }
 
 // ── Outbound ──────────────────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ async function pollSms(runtime) {
     try {
       await dispatchInboundDirectDmWithRuntime({
         cfg,
-        channel: "termux-sms",
+        channel: "termux-sms-channel",
         accountId: "default",
         peer: replyTo,
         runtime,
@@ -265,7 +265,7 @@ async function pollMms(runtime) {
     try {
       await dispatchInboundDirectDmWithRuntime({
         cfg,
-        channel: "termux-sms",
+        channel: "termux-sms-channel",
         accountId: "default",
         peer: replyTo,
         runtime,
@@ -298,7 +298,7 @@ async function pollMms(runtime) {
 
 function startPolling(runtime) {
   const cfg        = getConfig(runtime);
-  const intervalMs = Number(cfg?.channels?.["termux-sms"]?.pollIntervalMs ?? 5_000);
+  const intervalMs = Number(cfg?.channels?.["termux-sms-channel"]?.pollIntervalMs ?? 5_000);
 
   process.stderr.write(`[termux-channel] starting (interval=${intervalMs}ms, smsHW=${state.smsHighWater}, mmsHW=${state.mmsHighWater})\n`);
 

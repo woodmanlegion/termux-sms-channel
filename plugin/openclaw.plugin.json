@@ -1,9 +1,9 @@
 {
-  "id": "termux-sms",
+  "id": "termux-sms-channel",
   "name": "SMS/MMS (Termux)",
   "description": "Unified Termux SMS/MMS channel — SMS and MMS receive/send, persisted high-water marks, media saved to workspace",
   "channels": [
-    "termux-sms"
+    "termux-sms-channel"
   ],
   "activation": {
     "onStartup": false
@@ -14,7 +14,7 @@
     "properties": {}
   },
   "channelConfigs": {
-    "termux-sms": {
+    "termux-sms-channel": {
       "schema": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "type": "object",
