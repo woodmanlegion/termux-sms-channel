@@ -22,6 +22,10 @@
       "pluginApi": ">=2026.7.1"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/woodmanlegion/termux-sms-channel"
+  },
   "peerDependencies": {
     "openclaw": ">=2026.7.1"
   }
