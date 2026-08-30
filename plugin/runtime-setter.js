@@ -11,9 +11,9 @@ const execFileP = promisify(execFile);
 // Full paths required — Node.js subprocesses do not inherit Termux PATH.
 
 const HOME         = process.env.HOME ?? "/data/data/com.termux/files/home";
-const SMS_SEND     = `${HOME}/.openclaw/workspace/skills/sms-send/bin/sms-send`;
-const MMS_RECEIVE  = `${HOME}/Projects/66_mms-receive/bin/mms-receive`;
-const MMS_HTTP_SEND = `${HOME}/Scripts/mms-http-send`;
+const SMS_SEND      = `${HOME}/.openclaw/workspace/skills/sms-send/bin/sms-send`;
+const MMS_RECEIVE   = `${HOME}/.openclaw/workspace/skills/mms-receive/bin/mms-receive`;
+const MMS_HTTP_SEND = `${HOME}/.openclaw/workspace/skills/mms-send/bin/mms-http-send`;
 
 // State file for persisted high-water marks — survives gateway restarts
 const STATE_DIR  = `${HOME}/.config/openclaw-termux-channel`;
