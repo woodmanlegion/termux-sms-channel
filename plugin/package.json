@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-termux-channel",
+  "name": "termux-sms-channel",
   "version": "1.0.0",
   "description": "Unified Termux SMS/MMS channel plugin for OpenClaw — SMS receive/send, MMS receive/send, persisted high-water marks, hook stubs for media processing",
   "type": "module",
@@ -12,7 +12,7 @@
       "./index.js"
     ],
     "channel": {
-      "id": "termux-sms",
+      "id": "termux-sms-channel",
       "label": "SMS/MMS",
       "selectionLabel": "SMS/MMS (Termux)",
       "detailLabel": "Termux SMS/MMS",
