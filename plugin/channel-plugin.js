@@ -99,12 +99,14 @@ const smsBase = createChannelPluginBase({
 export const smsPlugin = createChatChannelPlugin({
   base: {
     ...smsBase,
-    // Polling channels have no persistent connection to signal — keep a pending
-    // Promise so the health-monitor sees running=true and stops restarting us.
-    startAccount: async ({ abortSignal }) => {
-      await new Promise((resolve) => {
-        abortSignal.addEventListener("abort", resolve, { once: true });
-      });
+    // gateway.startAccount keeps the health-monitor satisfied — a pending
+    // Promise signals running=true until the account is stopped.
+    gateway: {
+      startAccount: async ({ abortSignal }) => {
+        await new Promise((resolve) => {
+          abortSignal.addEventListener("abort", resolve, { once: true });
+        });
+      },
     },
   },
 });
