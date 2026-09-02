@@ -1,5 +1,6 @@
 import { createChatChannelPlugin, createChannelPluginBase } from "openclaw/plugin-sdk/channel-core";
 import { createTopLevelChannelConfigBase } from "openclaw/plugin-sdk/channel-config-helpers";
+import { existsSync } from "node:fs";
 
 const smsConfig = createTopLevelChannelConfigBase({
   sectionKey: "termux-sms-channel",
@@ -94,6 +95,19 @@ const smsBase = createChannelPluginBase({
     ],
   },
   setup: undefined,
+  doctor: {
+    collectPreviewWarnings: () => {
+      const HOME = process.env.HOME ?? "/data/data/com.termux/files/home";
+      const deps = [
+        [`${HOME}/.openclaw/workspace/skills/sms-send/bin/sms-send`, "skill-sms-send", "https://github.com/woodmanlegion/skill-sms-send"],
+        [`${HOME}/.openclaw/workspace/skills/mms-receive/bin/mms-receive`, "skill-mms-receive", "https://github.com/woodmanlegion/skill-mms-receive"],
+        [`${HOME}/.openclaw/workspace/skills/mms-send/bin/mms-http-send`, "mms-http-send (skill-mms-send)", "https://github.com/woodmanlegion/skill-mms-send"],
+      ];
+      return deps
+        .filter(([path]) => !existsSync(path))
+        .map(([, name, url]) => `termux-sms-channel: missing dependency ${name} — install from ${url}`);
+    },
+  },
 });
 
 export const smsPlugin = createChatChannelPlugin({
