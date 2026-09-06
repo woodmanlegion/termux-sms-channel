@@ -18,7 +18,8 @@ const MMS_HTTP_SEND = `${HOME}/.openclaw/workspace/skills/mms-send/bin/mms-http-
 // State file for persisted high-water marks — survives gateway restarts
 const STATE_DIR    = `${HOME}/.config/openclaw-termux-channel`;
 const STATE_FILE   = join(STATE_DIR, "state.json");
-const SESSIONS_FILE = `${HOME}/.openclaw/agents/main/sessions/sessions.json`;
+const SESSIONS_FILE   = `${HOME}/.openclaw/agents/main/sessions/sessions.json`;
+const OPENCLAW_CONFIG = `${HOME}/.openclaw/openclaw.json`;
 
 // ── Dependency check ──────────────────────────────────────────────────────────
 
@@ -48,17 +49,19 @@ function loadState() {
 
 // ── Model switching ───────────────────────────────────────────────────────────
 
-function listModels(runtime) {
-  const cfg = getConfig(runtime);
-  const providers = cfg?.models?.providers ?? {};
-  const results = [];
-  for (const [provId, prov] of Object.entries(providers)) {
-    for (const m of prov.models ?? []) {
-      const vision = (m.input ?? []).includes("image");
-      results.push({ id: `${provId}/${m.id}`, vision });
+function listModels() {
+  try {
+    const cfg = JSON.parse(readFileSync(OPENCLAW_CONFIG, "utf8"));
+    const providers = cfg?.models?.providers ?? {};
+    const results = [];
+    for (const [provId, prov] of Object.entries(providers)) {
+      for (const m of prov.models ?? []) {
+        const vision = (m.input ?? []).includes("image");
+        results.push({ id: `${provId}/${m.id}`, vision });
+      }
     }
-  }
-  return results;
+    return results;
+  } catch { return []; }
 }
 
 function getCurrentModel() {
@@ -181,7 +184,7 @@ async function handleSlashCommand(body, replyTo, runtime) {
     case "/status": {
       const cfg     = getConfig(runtime);
       const smsCfg  = getChannelConfig(runtime);
-      const model   = cfg?.agents?.defaults?.model?.fallbacks?.[0] ?? "unknown";
+      const model   = getCurrentModel() ?? cfg?.agents?.defaults?.model?.fallbacks?.[0] ?? "unknown";
       const myNum   = smsCfg.myNumber ?? "?";
       await sendSms(replyTo,
         `edge-android-25 online\nmodel: ${model}\nSMS: ${myNum}\nchannel: ok`
@@ -194,7 +197,7 @@ async function handleSlashCommand(body, replyTo, runtime) {
       return true;
 
     case "/models": {
-      const models = listModels(runtime);
+      const models = listModels();
       const current = getCurrentModel();
       const lines = models.map(m => {
         const tag = m.vision ? " [vision]" : "";
@@ -212,7 +215,7 @@ async function handleSlashCommand(body, replyTo, runtime) {
         await sendSms(replyTo, label);
         return true;
       }
-      const models = listModels(runtime);
+      const models = listModels();
       const match = models.find(m => m.id === arg || m.id.endsWith(`/${arg}`));
       if (!match) {
         await sendSms(replyTo, `Unknown model: ${arg}\nUse /models to list available.`);
