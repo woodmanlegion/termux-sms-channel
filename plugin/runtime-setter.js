@@ -16,8 +16,9 @@ const MMS_RECEIVE   = `${HOME}/.openclaw/workspace/skills/mms-receive/bin/mms-re
 const MMS_HTTP_SEND = `${HOME}/.openclaw/workspace/skills/mms-send/bin/mms-http-send`;
 
 // State file for persisted high-water marks — survives gateway restarts
-const STATE_DIR  = `${HOME}/.config/openclaw-termux-channel`;
-const STATE_FILE = join(STATE_DIR, "state.json");
+const STATE_DIR    = `${HOME}/.config/openclaw-termux-channel`;
+const STATE_FILE   = join(STATE_DIR, "state.json");
+const SESSIONS_FILE = `${HOME}/.openclaw/agents/main/sessions/sessions.json`;
 
 // ── Dependency check ──────────────────────────────────────────────────────────
 
@@ -42,6 +43,59 @@ function loadState() {
     return JSON.parse(readFileSync(STATE_FILE, "utf8"));
   } catch {
     return { smsHighWater: -1, mmsHighWater: 0 };
+  }
+}
+
+// ── Model switching ───────────────────────────────────────────────────────────
+
+function listModels(runtime) {
+  const cfg = getConfig(runtime);
+  const providers = cfg?.models?.providers ?? {};
+  const results = [];
+  for (const [provId, prov] of Object.entries(providers)) {
+    for (const m of prov.models ?? []) {
+      const vision = (m.input ?? []).includes("image");
+      results.push({ id: `${provId}/${m.id}`, vision });
+    }
+  }
+  return results;
+}
+
+function getCurrentModel() {
+  try {
+    const sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
+    const sess = sessions["agent:main:main"] ?? {};
+    if (sess.providerOverride && sess.modelOverride)
+      return `${sess.providerOverride}/${sess.modelOverride}`;
+    return null;
+  } catch { return null; }
+}
+
+function setSessionModel(providerOverride, modelOverride) {
+  try {
+    const sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
+    const sess = sessions["agent:main:main"] ?? {};
+    sess.providerOverride      = providerOverride;
+    sess.modelOverride         = modelOverride;
+    sess.modelOverrideSource   = "user";
+    sessions["agent:main:main"] = sess;
+    writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+  } catch (err) {
+    throw new Error(`could not write sessions.json: ${err?.message}`);
+  }
+}
+
+function clearSessionModel() {
+  try {
+    const sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
+    const sess = sessions["agent:main:main"] ?? {};
+    delete sess.providerOverride;
+    delete sess.modelOverride;
+    delete sess.modelOverrideSource;
+    sessions["agent:main:main"] = sess;
+    writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+  } catch (err) {
+    throw new Error(`could not write sessions.json: ${err?.message}`);
   }
 }
 
@@ -109,10 +163,13 @@ async function sendMms(to, filePath) {
 // Returns true if the command was handled (skip agent dispatch), false otherwise.
 
 const HELP_TEXT =
-  "/status  — system status\n" +
-  "/help    — this list\n" +
-  "/new [prompt] — start fresh session, optional opening prompt\n" +
-  "/reset   — alias for /new";
+  "/status       — system status\n" +
+  "/help         — this list\n" +
+  "/models       — list available models\n" +
+  "/model <id>   — switch model (use ID from /models)\n" +
+  "/model reset  — revert to default model\n" +
+  "/new [prompt] — start fresh session\n" +
+  "/reset        — alias for /new";
 
 async function handleSlashCommand(body, replyTo, runtime) {
   if (!body.startsWith("/")) return false;
@@ -135,6 +192,37 @@ async function handleSlashCommand(body, replyTo, runtime) {
     case "/help":
       await sendSms(replyTo, HELP_TEXT);
       return true;
+
+    case "/models": {
+      const models = listModels(runtime);
+      const current = getCurrentModel();
+      const lines = models.map(m => {
+        const tag = m.vision ? " [vision]" : "";
+        const cur = m.id === current ? " *" : "";
+        return `${m.id}${tag}${cur}`;
+      });
+      await sendSms(replyTo, lines.join("\n") || "No models configured.");
+      return true;
+    }
+
+    case "/model": {
+      if (!arg || arg === "reset") {
+        clearSessionModel();
+        const label = arg === "reset" ? "Model reset to default." : `Current: ${getCurrentModel() ?? "default"}`;
+        await sendSms(replyTo, label);
+        return true;
+      }
+      const models = listModels(runtime);
+      const match = models.find(m => m.id === arg || m.id.endsWith(`/${arg}`));
+      if (!match) {
+        await sendSms(replyTo, `Unknown model: ${arg}\nUse /models to list available.`);
+        return true;
+      }
+      const [provider, ...rest] = match.id.split("/");
+      setSessionModel(provider, rest.join("/"));
+      await sendSms(replyTo, `Model set: ${match.id}${match.vision ? " [vision]" : ""}`);
+      return true;
+    }
 
     case "/new":
     case "/reset": {
