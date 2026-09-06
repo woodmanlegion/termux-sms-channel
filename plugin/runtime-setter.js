@@ -104,6 +104,73 @@ async function sendMms(to, filePath) {
   await execFileP(MMS_HTTP_SEND, [to, filePath], { timeout: 60_000 });
 }
 
+// ── Deterministic slash commands ──────────────────────────────────────────────
+// These are handled before the agent sees the message.
+// Returns true if the command was handled (skip agent dispatch), false otherwise.
+
+const HELP_TEXT =
+  "/status  — system status\n" +
+  "/help    — this list\n" +
+  "/new [prompt] — start fresh session, optional opening prompt\n" +
+  "/reset   — alias for /new";
+
+async function handleSlashCommand(body, replyTo, runtime) {
+  if (!body.startsWith("/")) return false;
+
+  const [cmd, ...rest] = body.trim().split(/\s+/);
+  const arg = rest.join(" ").trim();
+
+  switch (cmd.toLowerCase()) {
+    case "/status": {
+      const cfg     = getConfig(runtime);
+      const smsCfg  = getChannelConfig(runtime);
+      const model   = cfg?.agents?.defaults?.model?.fallbacks?.[0] ?? "unknown";
+      const myNum   = smsCfg.myNumber ?? "?";
+      await sendSms(replyTo,
+        `edge-android-25 online\nmodel: ${model}\nSMS: ${myNum}\nchannel: ok`
+      );
+      return true;
+    }
+
+    case "/help":
+      await sendSms(replyTo, HELP_TEXT);
+      return true;
+
+    case "/new":
+    case "/reset": {
+      await dispatchInboundDirectDmWithRuntime({
+        cfg: getConfig(runtime),
+        channel: "termux-sms-channel",
+        accountId: "default",
+        peer: replyTo,
+        runtime,
+        channelLabel: "SMS",
+        conversationLabel: replyTo,
+        rawBody: body,
+        bodyForAgent: arg || "You are starting a new conversation. Greet the user briefly.",
+        commandBody: body,
+        commandAuthorized: true,
+        senderAddress: getChannelConfig(runtime).myNumber ?? "",
+        recipientAddress: replyTo,
+        senderId: replyTo,
+        messageId: `reset-${Date.now()}`,
+        timestamp: new Date(),
+        resetSession: true,
+        deliver: async (payload) => {
+          const text = String(payload?.text ?? "").trim();
+          if (text) await sendSms(replyTo, text);
+          return {};
+        },
+      });
+      return true;
+    }
+
+    default:
+      await sendSms(replyTo, `Unknown command: ${cmd}\n${HELP_TEXT}`);
+      return true;
+  }
+}
+
 // ── SMS inbound ───────────────────────────────────────────────────────────────
 
 async function fetchSmsInbox(limit = 20) {
@@ -148,7 +215,13 @@ async function pollSms(runtime) {
 
     const replyTo    = canonicalReplyTo ?? sender;
     const timestamp  = new Date(typeof msg.date === "number" ? msg.date : Date.now());
-    const agentBody  = body;
+
+    try {
+      if (await handleSlashCommand(body, replyTo, runtime)) continue;
+    } catch (err) {
+      process.stderr.write(`[termux-channel] slash command error: ${err?.message ?? err}\n`);
+      continue;
+    }
 
     try {
       await dispatchInboundDirectDmWithRuntime({
@@ -160,9 +233,9 @@ async function pollSms(runtime) {
         channelLabel: "SMS",
         conversationLabel: replyTo,
         rawBody: body,
-        bodyForAgent: agentBody,
+        bodyForAgent: body,
         commandBody: body,
-        commandAuthorized: body.startsWith("/"),
+        commandAuthorized: false,
         senderAddress: myNumber,
         recipientAddress: replyTo,
         senderId: sender,
