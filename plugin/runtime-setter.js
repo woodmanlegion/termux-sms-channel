@@ -57,11 +57,19 @@ function listModels() {
     for (const [provId, prov] of Object.entries(providers)) {
       for (const m of prov.models ?? []) {
         const vision = (m.input ?? []).includes("image");
-        results.push({ id: `${provId}/${m.id}`, vision });
+        const reasoning = m.reasoning === true;
+        results.push({ id: `${provId}/${m.id}`, vision, reasoning });
       }
     }
     return results;
   } catch { return []; }
+}
+
+// Returns the best vision model for a one-off auto-dispatch:
+// prefer non-reasoning vision models (cheaper), else fall back to any vision model.
+function bestVisionModel() {
+  const models = listModels();
+  return models.find(m => m.vision && !m.reasoning) ?? models.find(m => m.vision) ?? null;
 }
 
 function getCurrentModel() {
@@ -211,10 +219,13 @@ async function handleSlashCommand(body, replyTo, runtime) {
     }
 
     case "/model": {
-      if (!arg || arg === "reset") {
+      if (!arg) {
+        await sendSms(replyTo, `Current: ${getCurrentModel() ?? "default (fallback chain)"}`);
+        return true;
+      }
+      if (arg === "reset") {
         clearSessionModel();
-        const label = arg === "reset" ? "Model reset to default." : `Current: ${getCurrentModel() ?? "default"}`;
-        await sendSms(replyTo, label);
+        await sendSms(replyTo, "Model reset to default.");
         return true;
       }
       const models = listModels();
@@ -472,21 +483,25 @@ async function pollMms(runtime) {
     const timestamp = new Date(mms.date * 1000);
     const { bodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
 
-    // If MMS has images, verify the active model is vision-capable before dispatch.
+    // If MMS has images and the active model isn't vision-capable, automatically
+    // switch to the best available vision model for this one turn, then restore.
     const hasImages = mms.parts.some(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
+    let autoVisionRestoreModel = undefined; // undefined = no restore needed
+    let autoVisionRestoreClear = false;
     if (hasImages) {
       const currentModel = getCurrentModel();
       const allModels = listModels();
       const activeEntry = allModels.find(m => m.id === currentModel);
-      // activeEntry is null when no session override is set; treat that as non-vision
-      // since the default fallback (minimax-m2.7:cloud) is text-only.
       if (!activeEntry?.vision) {
-        const visionList = allModels.filter(m => m.vision).map(m => m.id).join(", ");
-        await sendSms(replyTo,
-          `Image received, but ${currentModel ? `current model (${currentModel})` : "default model"} doesn't support vision.\n` +
-          `Switch with /model — vision-capable: ${visionList}`
-        );
-        continue;
+        const pick = bestVisionModel();
+        if (!pick) {
+          await sendSms(replyTo, "Image received but no vision models are configured.");
+          continue;
+        }
+        autoVisionRestoreModel = currentModel;
+        autoVisionRestoreClear = !currentModel;
+        const [vProv, ...vRest] = pick.id.split("/");
+        setSessionModel(vProv, vRest.join("/"));
       }
     }
 
@@ -517,6 +532,14 @@ async function pollMms(runtime) {
       });
     } catch (err) {
       process.stderr.write(`[termux-channel] MMS dispatch error ${sender}: ${err?.message ?? err}\n`);
+    } finally {
+      // Restore model if we temporarily switched for vision
+      if (autoVisionRestoreClear) {
+        clearSessionModel();
+      } else if (autoVisionRestoreModel !== undefined) {
+        const [prov, ...rest] = autoVisionRestoreModel.split("/");
+        setSessionModel(prov, rest.join("/"));
+      }
     }
   }
 
