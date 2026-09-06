@@ -1,25 +1,35 @@
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
+import { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, createReadStream } from "node:fs";
+import { join, extname } from "node:path";
+import { URL } from "node:url";
 
 const execFileP = promisify(execFile);
 
 // ── Dependency paths ──────────────────────────────────────────────────────────
-// Full paths required — Node.js subprocesses do not inherit Termux PATH.
 
 const HOME         = process.env.HOME ?? "/data/data/com.termux/files/home";
 const SMS_SEND      = `${HOME}/.openclaw/workspace/skills/sms-send/bin/sms-send`;
 const MMS_RECEIVE   = `${HOME}/.openclaw/workspace/skills/mms-receive/bin/mms-receive`;
 const MMS_HTTP_SEND = `${HOME}/.openclaw/workspace/skills/mms-send/bin/mms-http-send`;
 
-// State file for persisted high-water marks — survives gateway restarts
 const STATE_DIR    = `${HOME}/.config/openclaw-termux-channel`;
 const STATE_FILE   = join(STATE_DIR, "state.json");
 const SESSIONS_FILE   = `${HOME}/.openclaw/agents/main/sessions/sessions.json`;
 const OPENCLAW_CONFIG = `${HOME}/.openclaw/openclaw.json`;
+
+const VIEWER_HTML = join(
+  HOME,
+  ".openclaw/workspace/skills/termux-sms-channel/eavesdrop/viewer.html"
+);
+
+const MIME_MAP = {
+  ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+  ".gif": "image/gif", ".webp": "image/webp", ".mp4": "video/mp4",
+};
 
 // ── Dependency check ──────────────────────────────────────────────────────────
 
@@ -65,8 +75,6 @@ function listModels() {
   } catch { return []; }
 }
 
-// Returns the best vision model for a one-off auto-dispatch:
-// prefer non-reasoning vision models (cheaper), else fall back to any vision model.
 function bestVisionModel() {
   const models = listModels();
   return models.find(m => m.vision && !m.reasoning) ?? models.find(m => m.vision) ?? null;
@@ -75,22 +83,33 @@ function bestVisionModel() {
 function getCurrentModel() {
   try {
     const sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
-    const sess = sessions["agent:main:main"] ?? {};
+    const sess = sessions["agent:main:termux-sms-channel:default:direct:+15550003333"]
+               ?? sessions["agent:main:main"]
+               ?? {};
     if (sess.providerOverride && sess.modelOverride)
       return `${sess.providerOverride}/${sess.modelOverride}`;
     return null;
   } catch { return null; }
 }
 
+function getSessionId() {
+  try {
+    const sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
+    const sess = sessions["agent:main:termux-sms-channel:default:direct:+15550003333"] ?? {};
+    return sess.sessionId ?? null;
+  } catch { return null; }
+}
+
 function setSessionModel(providerOverride, modelOverride) {
   try {
     const sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
-    const sess = sessions["agent:main:main"] ?? {};
+    const key = "agent:main:termux-sms-channel:default:direct:+15550003333";
+    const sess = sessions[key] ?? {};
     sess.providerOverride      = providerOverride;
     sess.modelOverride         = modelOverride;
     sess.modelOverrideSource   = "user";
     sess.updatedAt             = Date.now();
-    sessions["agent:main:main"] = sess;
+    sessions[key] = sess;
     writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
   } catch (err) {
     throw new Error(`could not write sessions.json: ${err?.message}`);
@@ -100,12 +119,13 @@ function setSessionModel(providerOverride, modelOverride) {
 function clearSessionModel() {
   try {
     const sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
-    const sess = sessions["agent:main:main"] ?? {};
+    const key = "agent:main:termux-sms-channel:default:direct:+15550003333";
+    const sess = sessions[key] ?? {};
     delete sess.providerOverride;
     delete sess.modelOverride;
     delete sess.modelOverrideSource;
     sess.updatedAt = Date.now();
-    sessions["agent:main:main"] = sess;
+    sessions[key] = sess;
     writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
   } catch (err) {
     throw new Error(`could not write sessions.json: ${err?.message}`);
@@ -119,6 +139,26 @@ function saveState(state) {
   } catch (err) {
     process.stderr.write(`[termux-channel] state save error: ${err?.message}\n`);
   }
+}
+
+// ── SSE broadcast ─────────────────────────────────────────────────────────────
+
+const sseClients = new Set();
+
+function ssePublish(eventName, data) {
+  const payload = `event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(payload); } catch { sseClients.delete(res); }
+  }
+}
+
+function logEntry(entry) {
+  ssePublish("message", {
+    ...entry,
+    model:     getCurrentModel() ?? "(default)",
+    sessionId: getSessionId(),
+    timestamp: entry.timestamp ?? new Date().toISOString(),
+  });
 }
 
 // ── Runtime store ─────────────────────────────────────────────────────────────
@@ -139,12 +179,6 @@ function isAllowed(sender, smsConfig) {
   return allowed.length === 0 || allowed.includes(sender);
 }
 
-// Returns the canonical reply-to number for a secondary source, or null if the
-// sender is not a secondary source. Secondary sources are treated as the owner
-// (messages are processed normally) but replies go to the primary allowFrom
-// number and a warning is sent back to the secondary number.
-// Intended for dual-SIM / multi-number scenarios where the same person uses
-// more than one phone number to reach the channel.
 function resolveSecondary(sender, smsConfig) {
   if (!smsConfig.secondaryFrom) return null;
   const secondary = String(smsConfig.secondaryFrom).split(",").map(s => s.trim()).filter(Boolean);
@@ -172,8 +206,6 @@ async function sendMms(to, filePath) {
 }
 
 // ── Deterministic slash commands ──────────────────────────────────────────────
-// These are handled before the agent sees the message.
-// Returns true if the command was handled (skip agent dispatch), false otherwise.
 
 const HELP_TEXT =
   "/status       — system status\n" +
@@ -190,58 +222,77 @@ async function handleSlashCommand(body, replyTo, runtime) {
   const [cmd, ...rest] = body.trim().split(/\s+/);
   const arg = rest.join(" ").trim();
 
+  // Log the slash command before handling; reply is filled in below
+  const slashEntry = {
+    type: "slash",
+    command: body,
+    sender: replyTo,
+    reply: null,
+    timestamp: new Date().toISOString(),
+  };
+
+  const reply = async (text) => {
+    slashEntry.reply = text;
+    logEntry(slashEntry);
+    await sendSms(replyTo, text);
+  };
+
   switch (cmd.toLowerCase()) {
     case "/status": {
       const cfg     = getConfig(runtime);
       const smsCfg  = getChannelConfig(runtime);
       const model   = getCurrentModel() ?? cfg?.agents?.defaults?.model?.fallbacks?.[0] ?? "unknown";
       const myNum   = smsCfg.myNumber ?? "?";
-      await sendSms(replyTo,
-        `edge-android-25 online\nmodel: ${model}\nSMS: ${myNum}\nchannel: ok`
-      );
+      await reply(`edge-android-25 online\nmodel: ${model}\nSMS: ${myNum}\nchannel: ok`);
       return true;
     }
 
     case "/help":
-      await sendSms(replyTo, HELP_TEXT);
+      await reply(HELP_TEXT);
       return true;
 
     case "/models": {
-      const models = listModels();
+      const models  = listModels();
       const current = getCurrentModel();
-      const lines = models.map(m => {
+      const lines   = models.map(m => {
         const tag = m.vision ? " [vision]" : "";
         const cur = m.id === current ? " *" : "";
         return `${m.id}${tag}${cur}`;
       });
-      await sendSms(replyTo, lines.join("\n") || "No models configured.");
+      await reply(lines.join("\n") || "No models configured.");
       return true;
     }
 
     case "/model": {
       if (!arg) {
-        await sendSms(replyTo, `Current: ${getCurrentModel() ?? "default (fallback chain)"}`);
+        await reply(`Current: ${getCurrentModel() ?? "default (fallback chain)"}`);
         return true;
       }
       if (arg === "reset") {
         clearSessionModel();
-        await sendSms(replyTo, "Model reset to default.");
+        await reply("Model reset to default.");
         return true;
       }
       const models = listModels();
-      const match = models.find(m => m.id === arg || m.id.endsWith(`/${arg}`));
+      const match  = models.find(m => m.id === arg || m.id.endsWith(`/${arg}`));
       if (!match) {
-        await sendSms(replyTo, `Unknown model: ${arg}\nUse /models to list available.`);
+        await reply(`Unknown model: ${arg}\nUse /models to list available.`);
         return true;
       }
-      const [provider, ...rest] = match.id.split("/");
-      setSessionModel(provider, rest.join("/"));
-      await sendSms(replyTo, `Model set: ${match.id}${match.vision ? " [vision]" : ""}`);
+      const [provider, ...mrest] = match.id.split("/");
+      setSessionModel(provider, mrest.join("/"));
+      await reply(`Model set: ${match.id}${match.vision ? " [vision]" : ""}`);
       return true;
     }
 
     case "/new":
     case "/reset": {
+      // Log session reset divider before dispatching
+      logEntry({
+        type:      "reset",
+        command:   body,
+        timestamp: new Date().toISOString(),
+      });
       await dispatchInboundDirectDmWithRuntime({
         cfg: getConfig(runtime),
         channel: "termux-sms-channel",
@@ -262,7 +313,10 @@ async function handleSlashCommand(body, replyTo, runtime) {
         resetSession: true,
         deliver: async (payload) => {
           const text = String(payload?.text ?? "").trim();
-          if (text) await sendSms(replyTo, text);
+          if (text) {
+            logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
+            await sendSms(replyTo, text);
+          }
           return {};
         },
       });
@@ -270,7 +324,7 @@ async function handleSlashCommand(body, replyTo, runtime) {
     }
 
     default:
-      await sendSms(replyTo, `Unknown command: ${cmd}\n${HELP_TEXT}`);
+      await reply(`Unknown command: ${cmd}\n${HELP_TEXT}`);
       return true;
   }
 }
@@ -317,8 +371,10 @@ async function pollSms(runtime) {
       continue;
     }
 
-    const replyTo    = canonicalReplyTo ?? sender;
-    const timestamp  = new Date(typeof msg.date === "number" ? msg.date : Date.now());
+    const replyTo   = canonicalReplyTo ?? sender;
+    const timestamp = new Date(typeof msg.date === "number" ? msg.date : Date.now()).toISOString();
+
+    logEntry({ type: "inbound", sender, text: body, timestamp });
 
     try {
       if (await handleSlashCommand(body, replyTo, runtime)) continue;
@@ -344,10 +400,13 @@ async function pollSms(runtime) {
         recipientAddress: replyTo,
         senderId: sender,
         messageId: String(id),
-        timestamp,
+        timestamp: new Date(timestamp),
         deliver: async (payload) => {
           const text = String(payload?.text ?? "").trim();
-          if (text) await sendSms(replyTo, text);
+          if (text) {
+            logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
+            await sendSms(replyTo, text);
+          }
           return {};
         },
       });
@@ -373,10 +432,6 @@ function formatMmsParts(parts) {
   }).join("\n");
 }
 
-// Builds bodyForAgent and extraContext for an MMS dispatch.
-// Image parts are passed via MediaPath/MediaType so openclaw annotates them,
-// and bodyForAgent includes an explicit read instruction so vision models
-// read the file immediately rather than relying on autonomous tool use.
 function buildMmsAgentPayload(mms, parts) {
   const imageParts = parts.filter(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
   const textParts  = parts.filter(p => p.text);
@@ -392,10 +447,7 @@ function buildMmsAgentPayload(mms, parts) {
     }
   }
 
-  for (const p of textParts) {
-    lines.push(`Text: ${p.text.slice(0, 500)}`);
-  }
-
+  for (const p of textParts) lines.push(`Text: ${p.text.slice(0, 500)}`);
   for (const p of otherParts) {
     const size = p.size ? ` (${(p.size / 1024).toFixed(1)} KB)` : "";
     lines.push(`Attachment: ${p.saved_path} (${p.mime})${size}`);
@@ -403,7 +455,6 @@ function buildMmsAgentPayload(mms, parts) {
 
   const bodyForAgent = lines.join("\n");
 
-  // Pass first image via extraContext so openclaw adds its standard media annotation
   const extraContext = {};
   if (imageParts.length > 0) {
     extraContext.MediaPath  = imageParts[0].saved_path;
@@ -470,26 +521,34 @@ async function pollMms(runtime) {
       continue;
     }
 
-    const replyTo = canonicalReplyTo ?? sender;
+    const replyTo  = canonicalReplyTo ?? sender;
+    const timestamp = new Date(mms.date * 1000).toISOString();
 
-    // Fire hook stubs per part (best-effort, non-blocking)
     for (const part of mms.parts) {
       if (part.saved_path && hookScript) {
         runHook(hookScript, part.mime, part.saved_path).catch(() => {});
       }
     }
 
+    // Log inbound MMS — include image parts for the viewer
+    const imageParts = mms.parts.filter(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
+    const textParts  = mms.parts.filter(p => p.text);
+    logEntry({
+      type:      "inbound",
+      sender,
+      text:      textParts.map(p => p.text).join("\n") || null,
+      images:    imageParts.map(p => ({ path: p.saved_path, mime: p.mime })),
+      timestamp,
+    });
+
     const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
-    const timestamp = new Date(mms.date * 1000);
     const { bodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
 
-    // If MMS has images and the active model isn't vision-capable, automatically
-    // switch to the best available vision model for this one turn, then restore.
     const hasImages = mms.parts.some(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
     if (hasImages) {
       const currentModel = getCurrentModel();
-      const allModels = listModels();
-      const activeEntry = allModels.find(m => m.id === currentModel);
+      const allModels    = listModels();
+      const activeEntry  = allModels.find(m => m.id === currentModel);
       if (!activeEntry?.vision) {
         const pick = bestVisionModel();
         if (!pick) {
@@ -498,8 +557,6 @@ async function pollMms(runtime) {
         }
         const [vProv, ...vRest] = pick.id.split("/");
         setSessionModel(vProv, vRest.join("/"));
-        // Vision model stays active after this turn — the session history will
-        // contain image data, which non-vision models reject. User can /model reset.
       }
     }
 
@@ -520,11 +577,14 @@ async function pollMms(runtime) {
         recipientAddress: replyTo,
         senderId: sender,
         messageId: `mms-${mms.id}`,
-        timestamp,
+        timestamp: new Date(timestamp),
         extraContext,
         deliver: async (payload) => {
           const text = String(payload?.text ?? "").trim();
-          if (text) await sendSms(replyTo, text);
+          if (text) {
+            logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
+            await sendSms(replyTo, text);
+          }
           return {};
         },
       });
@@ -555,6 +615,75 @@ function startPolling(runtime) {
   }, intervalMs);
 }
 
+// ── Eavesdrop HTTP routes ─────────────────────────────────────────────────────
+
+function registerEavesdropRoutes() {
+  // GET /plugins/termux-sms-channel/eavesdrop — serve the HTML viewer
+  registerPluginHttpRoute({
+    pluginId: "termux-sms-channel",
+    path:     "/eavesdrop",
+    auth:     "none",
+    handler:  (req, res) => {
+      if (req.method !== "GET") return false;
+      try {
+        const html = readFileSync(VIEWER_HTML, "utf8");
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(html);
+      } catch {
+        res.writeHead(404);
+        res.end("viewer.html not found");
+      }
+      return true;
+    },
+  });
+
+  // GET /plugins/termux-sms-channel/eavesdrop/events — SSE stream
+  registerPluginHttpRoute({
+    pluginId: "termux-sms-channel",
+    path:     "/eavesdrop/events",
+    auth:     "none",
+    handler:  (req, res) => {
+      if (req.method !== "GET") return false;
+      res.writeHead(200, {
+        "Content-Type":  "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection":    "keep-alive",
+      });
+
+      // Send current meta on connect
+      const meta = JSON.stringify({ model: getCurrentModel() ?? "(default)", sessionId: getSessionId() });
+      res.write(`event: meta\ndata: ${meta}\n\n`);
+
+      sseClients.add(res);
+      req.on("close", () => sseClients.delete(res));
+      return true;
+    },
+  });
+
+  // GET /plugins/termux-sms-channel/eavesdrop/media?path=... — serve local media files
+  registerPluginHttpRoute({
+    pluginId: "termux-sms-channel",
+    path:     "/eavesdrop/media",
+    auth:     "none",
+    handler:  (req, res) => {
+      if (req.method !== "GET") return false;
+      const qs   = new URL(req.url, "http://localhost").searchParams;
+      const file = qs.get("path");
+      if (!file || !existsSync(file)) {
+        res.writeHead(404);
+        res.end("not found");
+        return true;
+      }
+      const mime = MIME_MAP[extname(file).toLowerCase()] ?? "application/octet-stream";
+      res.writeHead(200, { "Content-Type": mime });
+      createReadStream(file).pipe(res);
+      return true;
+    },
+  });
+
+  process.stderr.write("[termux-channel] eavesdrop routes registered at /plugins/termux-sms-channel/eavesdrop\n");
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 export function setSmsRuntime(runtime) {
@@ -563,6 +692,7 @@ export function setSmsRuntime(runtime) {
     checkDependencies();
     state = loadState();
     setRuntime(runtime);
+    registerEavesdropRoutes();
     startPolling(runtime);
   } catch (err) {
     process.stderr.write(`[termux-channel] ERROR in setSmsRuntime: ${err?.message}\n`);
