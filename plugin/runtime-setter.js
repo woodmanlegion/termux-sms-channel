@@ -81,6 +81,7 @@ function setSessionModel(providerOverride, modelOverride) {
     sess.providerOverride      = providerOverride;
     sess.modelOverride         = modelOverride;
     sess.modelOverrideSource   = "user";
+    sess.updatedAt             = Date.now();
     sessions["agent:main:main"] = sess;
     writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
   } catch (err) {
@@ -95,6 +96,7 @@ function clearSessionModel() {
     delete sess.providerOverride;
     delete sess.modelOverride;
     delete sess.modelOverrideSource;
+    sess.updatedAt = Date.now();
     sessions["agent:main:main"] = sess;
     writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
   } catch (err) {
