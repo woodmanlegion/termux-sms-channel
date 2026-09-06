@@ -486,8 +486,6 @@ async function pollMms(runtime) {
     // If MMS has images and the active model isn't vision-capable, automatically
     // switch to the best available vision model for this one turn, then restore.
     const hasImages = mms.parts.some(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
-    let autoVisionRestoreModel = undefined; // undefined = no restore needed
-    let autoVisionRestoreClear = false;
     if (hasImages) {
       const currentModel = getCurrentModel();
       const allModels = listModels();
@@ -498,10 +496,10 @@ async function pollMms(runtime) {
           await sendSms(replyTo, "Image received but no vision models are configured.");
           continue;
         }
-        autoVisionRestoreModel = currentModel;
-        autoVisionRestoreClear = !currentModel;
         const [vProv, ...vRest] = pick.id.split("/");
         setSessionModel(vProv, vRest.join("/"));
+        // Vision model stays active after this turn — the session history will
+        // contain image data, which non-vision models reject. User can /model reset.
       }
     }
 
@@ -532,14 +530,6 @@ async function pollMms(runtime) {
       });
     } catch (err) {
       process.stderr.write(`[termux-channel] MMS dispatch error ${sender}: ${err?.message ?? err}\n`);
-    } finally {
-      // Restore model if we temporarily switched for vision
-      if (autoVisionRestoreClear) {
-        clearSessionModel();
-      } else if (autoVisionRestoreModel !== undefined) {
-        const [prov, ...rest] = autoVisionRestoreModel.split("/");
-        setSessionModel(prov, rest.join("/"));
-      }
     }
   }
 
