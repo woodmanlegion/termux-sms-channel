@@ -660,15 +660,16 @@ function registerEavesdropRoutes() {
     },
   });
 
-  // GET /plugins/termux-sms-channel/eavesdrop/media?path=... — serve local media files
+  // GET /eavesdrop/media?path=... — serve local media files
   registerPluginHttpRoute({
     pluginId: "termux-sms-channel",
     path:     "/eavesdrop/media",
     auth:     "none",
     handler:  (req, res) => {
       if (req.method !== "GET") return false;
-      const qs   = new URL(req.url, "http://localhost").searchParams;
-      const file = qs.get("path");
+      // req.url may be a full path or just query string depending on gateway prefix stripping
+      const m    = (req.url ?? "").match(/[?&]path=([^&]*)/);
+      const file = m ? decodeURIComponent(m[1]) : null;
       if (!file || !existsSync(file)) {
         res.writeHead(404);
         res.end("not found");

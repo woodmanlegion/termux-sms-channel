@@ -102,6 +102,7 @@ const hdrLast = document.getElementById('hdr-last');
 
 let lastActivity = null;
 let activityTimer = null;
+const seen = new Set();  // dedup by (type+timestamp+sender+text)
 
 function updateLastSeen() {
   if (!lastActivity) return;
@@ -123,8 +124,19 @@ function ts(iso) {
   return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
 }
 
-function append(html) {
-  log.insertAdjacentHTML('beforeend', html);
+function insertSorted(html, iso) {
+  const ts = iso ? new Date(iso).getTime() : Date.now();
+  const nodes = log.children;
+  let ref = null;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const t = Number(nodes[i].dataset.ts || 0);
+    if (t <= ts) { ref = nodes[i].nextSibling; break; }
+  }
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const el = tmp.firstElementChild;
+  el.dataset.ts = ts;
+  log.insertBefore(el, ref);
   log.scrollTop = log.scrollHeight;
 }
 
@@ -133,23 +145,28 @@ function renderEntry(ev) {
   if (ev.model) hdrModel.textContent = ev.model;
   if (ev.sessionId) hdrSession.textContent = ev.sessionId.slice(0, 8);
 
+  // Deduplicate: same type+timestamp+sender+first-80-chars-of-text
+  const key = `${ev.type}|${ev.timestamp}|${ev.sender||''}|${String(ev.text||'').slice(0,80)}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+
   const t = ts(ev.timestamp);
 
   if (ev.type === 'reset') {
-    append(`
+    insertSorted(`
       <div class="entry divider">
         <hr class="divider-line">
         <div class="divider-label">⟳ new session — ${t}${ev.model ? ' · ' + ev.model : ''}</div>
-      </div>`);
+      </div>`, ev.timestamp);
     return;
   }
 
   if (ev.type === 'slash') {
-    append(`
+    insertSorted(`
       <div class="entry system">
         <div class="bubble">⚡ ${escHtml(ev.command)}<br><span style="color:#aaa">${escHtml(ev.reply || '')}</span></div>
         <div class="meta">${t}</div>
-      </div>`);
+      </div>`, ev.timestamp);
     return;
   }
 
@@ -165,11 +182,11 @@ function renderEntry(ev) {
     }
   }
 
-  append(`
+  insertSorted(`
     <div class="entry ${dir}">
       <div class="bubble">${content}</div>
       <div class="meta">${escHtml(from)} · ${t}</div>
-    </div>`);
+    </div>`, ev.timestamp);
 }
 
 function escHtml(s) {
