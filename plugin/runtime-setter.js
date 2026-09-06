@@ -345,6 +345,8 @@ async function pollSms(runtime) {
 
 // ── MMS inbound ───────────────────────────────────────────────────────────────
 
+const IMAGE_MIME_RE = /^image\//i;
+
 function formatMmsParts(parts) {
   return parts.map(p => {
     const size = p.size ? ` (${(p.size / 1024).toFixed(1)} KB)` : "";
@@ -353,6 +355,50 @@ function formatMmsParts(parts) {
     const err  = p.error ? `\n    [file unavailable — may have expired in telephony storage]` : "";
     return `  - ${p.mime}${p.name ? " " + p.name : ""}${size}${path}${text}${err}`;
   }).join("\n");
+}
+
+// Builds bodyForAgent and extraContext for an MMS dispatch.
+// Image parts are passed via MediaPath/MediaType so openclaw annotates them,
+// and bodyForAgent includes an explicit read instruction so vision models
+// read the file immediately rather than relying on autonomous tool use.
+function buildMmsAgentPayload(mms, parts) {
+  const imageParts = parts.filter(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
+  const textParts  = parts.filter(p => p.text);
+  const otherParts = parts.filter(p => !IMAGE_MIME_RE.test(p.mime ?? "") && !p.text && p.saved_path);
+
+  const lines = [];
+
+  if (imageParts.length > 0) {
+    lines.push(`[MMS — ${imageParts.length} image(s) received. Read each file and describe its contents before responding.]`);
+    for (const p of imageParts) {
+      const size = p.size ? ` (${(p.size / 1024).toFixed(1)} KB)` : "";
+      lines.push(`Image: ${p.saved_path}${size}`);
+    }
+  }
+
+  for (const p of textParts) {
+    lines.push(`Text: ${p.text.slice(0, 500)}`);
+  }
+
+  for (const p of otherParts) {
+    const size = p.size ? ` (${(p.size / 1024).toFixed(1)} KB)` : "";
+    lines.push(`Attachment: ${p.saved_path} (${p.mime})${size}`);
+  }
+
+  const bodyForAgent = lines.join("\n");
+
+  // Pass first image via extraContext so openclaw adds its standard media annotation
+  const extraContext = {};
+  if (imageParts.length > 0) {
+    extraContext.MediaPath  = imageParts[0].saved_path;
+    extraContext.MediaType  = imageParts[0].mime;
+    if (imageParts.length > 1) {
+      extraContext.MediaPaths = imageParts.map(p => p.saved_path);
+      extraContext.MediaTypes = imageParts.map(p => p.mime);
+    }
+  }
+
+  return { bodyForAgent, extraContext };
 }
 
 async function runHook(hookScript, mime, savedPath) {
@@ -419,9 +465,7 @@ async function pollMms(runtime) {
 
     const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
     const timestamp = new Date(mms.date * 1000);
-    const agentBody = canonicalReplyTo
-      ? body
-      : body;
+    const { bodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
 
     try {
       await dispatchInboundDirectDmWithRuntime({
@@ -433,7 +477,7 @@ async function pollMms(runtime) {
         channelLabel: "SMS",
         conversationLabel: replyTo,
         rawBody: body,
-        bodyForAgent: agentBody,
+        bodyForAgent,
         commandBody: body,
         commandAuthorized: false,
         senderAddress: myNumber,
@@ -441,6 +485,7 @@ async function pollMms(runtime) {
         senderId: sender,
         messageId: `mms-${mms.id}`,
         timestamp,
+        extraContext,
         deliver: async (payload) => {
           const text = String(payload?.text ?? "").trim();
           if (text) await sendSms(replyTo, text);
