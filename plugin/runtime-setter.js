@@ -472,6 +472,24 @@ async function pollMms(runtime) {
     const timestamp = new Date(mms.date * 1000);
     const { bodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
 
+    // If MMS has images, verify the active model is vision-capable before dispatch.
+    const hasImages = mms.parts.some(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
+    if (hasImages) {
+      const currentModel = getCurrentModel();
+      const allModels = listModels();
+      const activeEntry = allModels.find(m => m.id === currentModel);
+      // activeEntry is null when no session override is set; treat that as non-vision
+      // since the default fallback (minimax-m2.7:cloud) is text-only.
+      if (!activeEntry?.vision) {
+        const visionList = allModels.filter(m => m.vision).map(m => m.id).join(", ");
+        await sendSms(replyTo,
+          `Image received, but ${currentModel ? `current model (${currentModel})` : "default model"} doesn't support vision.\n` +
+          `Switch with /model — vision-capable: ${visionList}`
+        );
+        continue;
+      }
+    }
+
     try {
       await dispatchInboundDirectDmWithRuntime({
         cfg,
