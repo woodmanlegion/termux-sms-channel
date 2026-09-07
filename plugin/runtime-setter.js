@@ -618,7 +618,7 @@ function startPolling(runtime) {
 // ── Eavesdrop HTTP routes ─────────────────────────────────────────────────────
 
 function registerEavesdropRoutes() {
-  // GET /plugins/termux-sms-channel/eavesdrop — serve the HTML viewer
+  // GET /eavesdrop — serve the HTML viewer
   registerPluginHttpRoute({
     pluginId: "termux-sms-channel",
     path:     "/eavesdrop",
@@ -637,7 +637,7 @@ function registerEavesdropRoutes() {
     },
   });
 
-  // GET /plugins/termux-sms-channel/eavesdrop/events — SSE stream
+  // GET /eavesdrop/events — SSE stream
   registerPluginHttpRoute({
     pluginId: "termux-sms-channel",
     path:     "/eavesdrop/events",
@@ -682,7 +682,7 @@ function registerEavesdropRoutes() {
     },
   });
 
-  process.stderr.write("[termux-channel] eavesdrop routes registered at /plugins/termux-sms-channel/eavesdrop\n");
+  process.stderr.write("[termux-channel] eavesdrop routes registered at /eavesdrop\n");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
