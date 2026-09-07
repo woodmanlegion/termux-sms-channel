@@ -124,6 +124,44 @@ openclaw gateway restart
 
 ---
 
+## Browser Coagency
+
+The agent can share the visible VNC Chromium browser with the user via the OpenClaw extension driver. This allows the agent to see and drive the same browser the user sees.
+
+### How it works
+
+- **Extension driver**: `chrome` profile in `openclaw.json` uses `driver: "extension"`.
+- **Relay**: The gateway listens on port 18799 for the Chrome extension WebSocket. The relay starts lazily on the first browser tool call.
+- **Pairing**: The extension authenticates via a session token embedded in the pairing string: `ws://127.0.0.1:18799/extension#<token>`.
+- **Tab sharing**: After pairing, tabs shared via the extension popup are visible to `browser tabs` and `browser snapshot`.
+
+### After a gateway restart
+
+The pairing token changes on every gateway restart. The extension will show "Relay unreachable" or auth errors (`HTTP Authentication failed`). To re-pair:
+
+```bash
+# Option A: automated (requires claude-termux-x11 installed)
+x11-browser-pair
+
+# Option B: manual
+openclaw browser extension pair   # prints the new pairing string
+# Then: click the OpenClaw toolbar icon → Unpair → paste string → Pair
+```
+
+### SSRF note
+
+`browser snapshot` on loopback URLs (e.g. the eavesdrop viewer at `127.0.0.1:18789`) requires:
+```bash
+openclaw config patch browser.ssrfPolicy.dangerouslyAllowPrivateNetwork true
+```
+The gateway logs a security warning. Tighten this if the agent no longer needs to read local services.
+
+### Known issues
+
+- [#1](https://github.com/woodmanlegion/termux-sms-channel/issues/1) — `/status` does not appear in the eavesdrop tap. `/help` does appear. Both are handled by the gateway before reaching the agent, but only `/status` is silently dropped from the eavesdrop stream.
+
+---
+
 ## Framework Compatibility
 
 | Framework | Status | Notes |
