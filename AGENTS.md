@@ -86,6 +86,18 @@ claw-gh-install woodmanlegion/skill-mms-receive
 
 ---
 
+## Eavesdrop Viewer
+
+The plugin exposes a live SMS conversation monitor at:
+
+- Viewer: `http://127.0.0.1:18789/eavesdrop`
+- SSE stream: `http://127.0.0.1:18789/eavesdrop/events`
+- Media: `http://127.0.0.1:18789/eavesdrop/media?path=<absolute-path>`
+
+This is a read-only tap on the channel — it does not affect message flow. The route is at the gateway root, not under a plugin prefix.
+
+---
+
 ## Health / Troubleshooting
 
 **Channel not starting:**
