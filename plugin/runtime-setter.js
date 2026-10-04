@@ -220,11 +220,15 @@ function clearPendingSlash() {
 
 function drainPendingSlashNotes() {
   if (pendingSlashNotes.length === 0) return "";
-  const header = pendingSlashNotes
-    .map((body) => `**note but ignore** ${body} run between prompts`)
-    .join("\n");
+  // First version of this used a "**note but ignore**" line per command,
+  // which backfired live: the model treated it as something to react to
+  // rather than skip, and -- since it had no record of handling these
+  // itself -- guessed they must have failed and said so, unprompted,
+  // wrongly. Naming plainly that they already ran and already got a
+  // reply (so there's nothing left to do) is what actually worked.
+  const commands = pendingSlashNotes.join(", ");
   pendingSlashNotes = [];
-  return `${header}\n\n`;
+  return `[Context: ${commands} ran since your last turn -- handled directly, already replied to. Not part of this message; no action needed.]\n\n`;
 }
 
 // ── Deterministic slash commands ──────────────────────────────────────────────
