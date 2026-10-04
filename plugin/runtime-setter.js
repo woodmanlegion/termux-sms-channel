@@ -12,9 +12,17 @@ const execFileP = promisify(execFile);
 // ── Dependency paths ──────────────────────────────────────────────────────────
 
 const HOME         = process.env.HOME ?? "/data/data/com.termux/files/home";
-const SMS_SEND      = `${HOME}/.openclaw/workspace/skills/sms-send/bin/sms-send`;
-const MMS_RECEIVE   = `${HOME}/.openclaw/workspace/skills/mms-receive/bin/mms-receive`;
-const MMS_HTTP_SEND = `${HOME}/.openclaw/workspace/skills/mms-send/bin/mms-http-send`;
+// skill-sms-send/skill-mms-send/skill-mms-receive are deprecated and
+// archived -- consolidated into woodmanlegion/termux-sms. Sending now
+// goes through termux-sms-send (the package's message-manager
+// entrypoint, _termux_sms_lib.py's send_sms/send_mms) so outbound
+// attempts get logged in one place instead of this plugin duplicating
+// that bookkeeping itself -- a pass-through, not a reimplementation.
+// Receiving (MMS_RECEIVE) is unchanged: this plugin still polls itself
+// for now; rewiring inbound to subscribe as a termux-sms-poll handler
+// instead is a separate, larger task, not done here.
+const TERMUX_SMS_SEND = `${HOME}/.local/bin/termux-sms-send`;
+const MMS_RECEIVE     = `${HOME}/.local/bin/mms-receive`;
 
 const STATE_DIR    = `${HOME}/.config/openclaw-termux-channel`;
 const STATE_FILE   = join(STATE_DIR, "state.json");
@@ -35,9 +43,8 @@ const MIME_MAP = {
 
 function checkDependencies() {
   const deps = [
-    [SMS_SEND,      "skill-sms-send",    "https://github.com/woodmanlegion/skill-sms-send"],
-    [MMS_RECEIVE,   "skill-mms-receive", "https://github.com/woodmanlegion/skill-mms-receive"],
-    [MMS_HTTP_SEND, "mms-http-send",     "https://github.com/woodmanlegion/skill-mms-send"],
+    [TERMUX_SMS_SEND, "termux-sms-send (termux-sms)", "https://github.com/woodmanlegion/termux-sms"],
+    [MMS_RECEIVE,     "mms-receive (termux-sms)",      "https://github.com/woodmanlegion/termux-sms"],
   ];
   const missing = deps.filter(([path]) => !existsSync(path));
   if (missing.length > 0) {
@@ -198,11 +205,14 @@ function getChannelConfig(runtime) {
 // ── Outbound ──────────────────────────────────────────────────────────────────
 
 async function sendSms(to, text) {
-  await execFileP(SMS_SEND, [to, text], { timeout: 30_000 });
+  // Pass-through to the message manager, per plan -- not reimplemented
+  // here. termux-sms-send logs the outbound attempt itself (success or
+  // failure) before this ever returns.
+  await execFileP(TERMUX_SMS_SEND, ["sms", to, text], { timeout: 30_000 });
 }
 
 async function sendMms(to, filePath) {
-  await execFileP(MMS_HTTP_SEND, [to, filePath], { timeout: 60_000 });
+  await execFileP(TERMUX_SMS_SEND, ["mms", to, filePath], { timeout: 60_000 });
 }
 
 // ── Deterministic slash commands ──────────────────────────────────────────────

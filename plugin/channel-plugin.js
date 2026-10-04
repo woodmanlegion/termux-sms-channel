@@ -98,10 +98,11 @@ const smsBase = createChannelPluginBase({
   doctor: {
     collectPreviewWarnings: () => {
       const HOME = process.env.HOME ?? "/data/data/com.termux/files/home";
+      // Consolidated into woodmanlegion/termux-sms -- see runtime-setter.js's
+      // own comment on TERMUX_SMS_SEND/MMS_RECEIVE for why these paths moved.
       const deps = [
-        [`${HOME}/.openclaw/workspace/skills/sms-send/bin/sms-send`, "skill-sms-send", "https://github.com/woodmanlegion/skill-sms-send"],
-        [`${HOME}/.openclaw/workspace/skills/mms-receive/bin/mms-receive`, "skill-mms-receive", "https://github.com/woodmanlegion/skill-mms-receive"],
-        [`${HOME}/.openclaw/workspace/skills/mms-send/bin/mms-http-send`, "mms-http-send (skill-mms-send)", "https://github.com/woodmanlegion/skill-mms-send"],
+        [`${HOME}/.local/bin/termux-sms-send`, "termux-sms-send (termux-sms)", "https://github.com/woodmanlegion/termux-sms"],
+        [`${HOME}/.local/bin/mms-receive`, "mms-receive (termux-sms)", "https://github.com/woodmanlegion/termux-sms"],
       ];
       return deps
         .filter(([path]) => !existsSync(path))
