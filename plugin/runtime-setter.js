@@ -60,7 +60,17 @@ function loadState() {
   try {
     return JSON.parse(readFileSync(STATE_FILE, "utf8"));
   } catch {
-    return { smsHighWater: -1, mmsHighWater: 0 };
+    // null, not {-1, 0} -- a missing state file means "never
+    // initialized," not "start from the beginning of history." See
+    // ensureFreshState() below: the same bug already found and fixed in
+    // termux-sms-poll (woodmanlegion/termux-sms) existed here too, and
+    // caused a real incident -- a fresh-enabled channel replayed every
+    // old message in the SIM's inbox as if it had just arrived, dispatched
+    // each one to the agent, and (with allowFrom == myNumber during
+    // self-testing) each reply became a new inbound message, becoming a
+    // self-sustaining reply loop that sent real SMS continuously until
+    // manually stopped.
+    return null;
   }
 }
 
@@ -177,6 +187,48 @@ const { setRuntime } = createPluginRuntimeStore({
 
 let pollTimer = null;
 let state     = { smsHighWater: -1, mmsHighWater: 0 };
+let stateInitialized = false;
+let freshStateInitPromise = null;
+
+// First run: start from "now" -- the current latest id on each side --
+// instead of replaying the full backlog. Shared by pollSms/pollMms so
+// only one probe runs even if both fire on the same tick.
+async function ensureFreshState() {
+  if (stateInitialized) return;
+  if (!freshStateInitPromise) {
+    freshStateInitPromise = (async () => {
+      let smsHW = -1, mmsHW = 0;
+      try {
+        const latest = await fetchSmsInbox(1);
+        if (latest.length > 0) {
+          smsHW = Math.max(...latest.map((m) => Number(m._id ?? -1)));
+        }
+      } catch (err) {
+        process.stderr.write(`[termux-channel] fresh-state SMS probe failed: ${err?.message}\n`);
+      }
+      try {
+        const { stdout } = await execFileP(
+          MMS_RECEIVE,
+          ["--limit", "1", "--no-save", "--json"],
+          { timeout: 45_000 }
+        );
+        const parsed = JSON.parse(stdout);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          mmsHW = Math.max(...parsed.map((m) => Number(m.id ?? 0)));
+        }
+      } catch (err) {
+        process.stderr.write(`[termux-channel] fresh-state MMS probe failed: ${err?.message}\n`);
+      }
+      state = { smsHighWater: smsHW, mmsHighWater: mmsHW };
+      saveState(state);
+      stateInitialized = true;
+      process.stderr.write(
+        `[termux-channel] first run -- starting from current (smsHW=${state.smsHighWater}, mmsHW=${state.mmsHighWater}), not replaying history\n`
+      );
+    })();
+  }
+  await freshStateInitPromise;
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -352,6 +404,7 @@ async function fetchSmsInbox(limit = 20) {
 }
 
 async function pollSms(runtime) {
+  await ensureFreshState();
   let messages;
   try { messages = await fetchSmsInbox(20); } catch { return; }
 
@@ -488,6 +541,7 @@ async function runHook(hookScript, mime, savedPath) {
 }
 
 async function pollMms(runtime) {
+  await ensureFreshState();
   const smsCfg     = getChannelConfig(runtime);
   const cfg        = getConfig(runtime);
   const myNumber   = String(smsCfg.myNumber ?? "").trim();
@@ -701,7 +755,11 @@ export function setSmsRuntime(runtime) {
   try {
     process.stderr.write("[termux-channel] setSmsRuntime called\n");
     checkDependencies();
-    state = loadState();
+    const loaded = loadState();
+    if (loaded !== null) {
+      state = loaded;
+      stateInitialized = true;
+    }
     setRuntime(runtime);
     registerEavesdropRoutes();
     startPolling(runtime);
