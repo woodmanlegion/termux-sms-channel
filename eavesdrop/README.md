@@ -10,11 +10,20 @@ This is **not** a skill. The agent never uses it. It is a tap for the human oper
 
 ## Opening the viewer
 
-With the openclaw gateway running, open in VNC Chromium:
+With the openclaw gateway running:
 
 ```
 http://127.0.0.1:18789/eavesdrop
 ```
+
+**No VNC/X11 needed** — confirmed 2026-10-04: the device's own native
+mobile browser works directly, since Android shares the loopback
+interface (`127.0.0.1`) across all apps on the same device by default.
+Open it right in Chrome (or whatever's installed) on the phone itself.
+Confirmed showing both conversation sides, slash command annotations,
+and inline MMS images correctly this way. A VNC/X11 desktop session
+(`termux-x11`, a separate, not-yet-set-up project) is one way to view
+it, not a requirement.
 
 The page connects to a server-sent events stream and updates live. No refresh needed. The green dot in the header indicates an active connection.
 
