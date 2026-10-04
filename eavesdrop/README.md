@@ -29,6 +29,16 @@ The page connects to a server-sent events stream and updates live. No refresh ne
 
 ## Observing from the terminal (Claude Code / curl)
 
+Preferred: `tclaw tap on` / `tclaw tap off` / `tclaw tap status` (added
+2026-10-04) — a stateful on/off handoff that starts the background
+`curl` for you, tracks its pid in `~/.tclaw/tap/pid`, and reads the
+real gateway port from `openclaw.json` instead of assuming `18789`.
+Logs to `~/.tclaw/tap/eavesdrop.log`. This replaced an agent hand-rolling
+`ssh`+`curl`+background-task juggling each session — exactly how its
+absence got noticed in the first place.
+
+Raw `curl`, if you want it directly instead:
+
 ```bash
 curl -N http://127.0.0.1:18789/eavesdrop/events
 ```
