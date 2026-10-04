@@ -51,7 +51,7 @@ The `meta` event fires on connect and carries `{ model, sessionId }`.
 
 ## Media note
 
-MMS images are served by path from wherever `mms-receive` saves them (default: `~/.openclaw/workspace/media/inbound`). If media storage is reorganized, the `/eavesdrop/media?path=...` route still works — it is a passthrough with no assumptions about directory structure.
+MMS images are served by path from wherever `mms-receive` saves them (default: `~/.termux-sms/media/inbound` — `skill-mms-receive` is deprecated and archived, consolidated into `woodmanlegion/termux-sms`, which changed this default since it's no longer an openclaw-specific skill). If media storage is reorganized, the `/eavesdrop/media?path=...` route still works — it is a passthrough with no assumptions about directory structure.
 
 ## Security surface
 
