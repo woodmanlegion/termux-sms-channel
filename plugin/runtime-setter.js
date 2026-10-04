@@ -185,15 +185,46 @@ function getChannelConfig(runtime) {
 
 // ── Outbound ──────────────────────────────────────────────────────────────────
 
-async function sendSms(to, text) {
+async function sendSms(to, text, tag) {
   // Pass-through to the message manager, per plan -- not reimplemented
   // here. termux-sms-send logs the outbound attempt itself (success or
-  // failure) before this ever returns.
-  await execFileP(TERMUX_SMS_SEND, ["sms", to, text], { timeout: 30_000 });
+  // failure) before this ever returns. tag (e.g. "slash") is forwarded
+  // so messages.jsonl can distinguish a deterministic slash reply from
+  // an ordinary agent-dispatched one, without this plugin touching the
+  // log file directly.
+  const args = tag ? ["sms", to, text, "--tag", tag] : ["sms", to, text];
+  await execFileP(TERMUX_SMS_SEND, args, { timeout: 30_000 });
 }
 
 async function sendMms(to, filePath) {
   await execFileP(TERMUX_SMS_SEND, ["mms", to, filePath], { timeout: 60_000 });
+}
+
+// ── Pending slash notes (surfaced to the agent at its next real turn) ───────
+// Slash commands are handled deterministically and never reach the agent --
+// so without this, the agent has no idea e.g. /model was just switched.
+// Queued here, drained into a "note but ignore" header on the next actual
+// dispatch (SMS or MMS). /new and /reset are deliberately excluded: they
+// already force a fresh session, so there is nothing stale left to report
+// past that point -- queued notes are cleared outright when one fires.
+
+let pendingSlashNotes = [];
+
+function notePendingSlash(body) {
+  pendingSlashNotes.push(body);
+}
+
+function clearPendingSlash() {
+  pendingSlashNotes = [];
+}
+
+function drainPendingSlashNotes() {
+  if (pendingSlashNotes.length === 0) return "";
+  const header = pendingSlashNotes
+    .map((body) => `**note but ignore** ${body} run between prompts`)
+    .join("\n");
+  pendingSlashNotes = [];
+  return `${header}\n\n`;
 }
 
 // ── Deterministic slash commands ──────────────────────────────────────────────
@@ -212,6 +243,11 @@ async function handleSlashCommand(body, replyTo, runtime) {
 
   const [cmd, ...rest] = body.trim().split(/\s+/);
   const arg = rest.join(" ").trim();
+  const cmdLower = cmd.toLowerCase();
+
+  if (cmdLower !== "/new" && cmdLower !== "/reset") {
+    notePendingSlash(body);
+  }
 
   // Log the slash command before handling; reply is filled in below
   const slashEntry = {
@@ -225,10 +261,10 @@ async function handleSlashCommand(body, replyTo, runtime) {
   const reply = async (text) => {
     slashEntry.reply = text;
     logEntry(slashEntry);
-    await sendSms(replyTo, text);
+    await sendSms(replyTo, text, "slash");
   };
 
-  switch (cmd.toLowerCase()) {
+  switch (cmdLower) {
     case "/status": {
       const cfg     = getConfig(runtime);
       const smsCfg  = getChannelConfig(runtime);
@@ -278,6 +314,9 @@ async function handleSlashCommand(body, replyTo, runtime) {
 
     case "/new":
     case "/reset": {
+      // Starting fresh makes any notes queued before this moot.
+      clearPendingSlash();
+
       // Log session reset divider before dispatching
       logEntry({
         type:      "reset",
@@ -306,7 +345,7 @@ async function handleSlashCommand(body, replyTo, runtime) {
           const text = String(payload?.text ?? "").trim();
           if (text) {
             logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
-            await sendSms(replyTo, text);
+            await sendSms(replyTo, text, "slash");
           }
           return {};
         },
@@ -365,7 +404,7 @@ async function processSmsMessage(msg, runtime) {
       channelLabel: "SMS",
       conversationLabel: replyTo,
       rawBody: body,
-      bodyForAgent: body,
+      bodyForAgent: drainPendingSlashNotes() + body,
       commandBody: body,
       commandAuthorized: false,
       senderAddress: myNumber,
@@ -489,7 +528,8 @@ async function processMmsMessage(mms, runtime) {
   });
 
   const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
-  const { bodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
+  const { bodyForAgent: mmsBodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
+  const bodyForAgent = drainPendingSlashNotes() + mmsBodyForAgent;
 
   const hasImages = mms.parts.some(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
   if (hasImages) {
