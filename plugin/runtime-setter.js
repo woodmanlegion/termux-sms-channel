@@ -3,7 +3,7 @@ import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-
 import { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, createReadStream } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, createReadStream } from "node:fs";
 import { join, extname } from "node:path";
 import { URL } from "node:url";
 
@@ -11,21 +11,25 @@ const execFileP = promisify(execFile);
 
 // ── Dependency paths ──────────────────────────────────────────────────────────
 
-const HOME         = process.env.HOME ?? "/data/data/com.termux/files/home";
+const HOME = process.env.HOME ?? "/data/data/com.termux/files/home";
 // skill-sms-send/skill-mms-send/skill-mms-receive are deprecated and
-// archived -- consolidated into woodmanlegion/termux-sms. Sending now
-// goes through termux-sms-send (the package's message-manager
-// entrypoint, _termux_sms_lib.py's send_sms/send_mms) so outbound
-// attempts get logged in one place instead of this plugin duplicating
-// that bookkeeping itself -- a pass-through, not a reimplementation.
-// Receiving (MMS_RECEIVE) is unchanged: this plugin still polls itself
-// for now; rewiring inbound to subscribe as a termux-sms-poll handler
-// instead is a separate, larger task, not done here.
+// archived -- consolidated into woodmanlegion/termux-sms. Sending goes
+// through termux-sms-send (the package's message-manager entrypoint,
+// _termux_sms_lib.py's send_sms/send_mms) so outbound attempts get
+// logged in one place instead of this plugin duplicating that
+// bookkeeping itself.
+//
+// As of 2026-10-04: receiving is the same story. This plugin no longer
+// polls the SIM itself at all -- termux-sms-poll (also in termux-sms) is
+// the one and only poller, and this plugin is a *consumer*, triggered by
+// a tiny handler script (termux-sms-channel's own bin/termux-sms-channel-
+// handler, registered into ~/.config/termux-sms/handlers.d/ by `tclaw
+// sms-channel install`) that POSTs each new message to the webhook route
+// registered below. That's why there's no MMS_RECEIVE constant here
+// anymore -- this plugin never calls mms-receive directly; termux-sms-
+// poll already did, and handed us the already-fetched result.
 const TERMUX_SMS_SEND = `${HOME}/.local/bin/termux-sms-send`;
-const MMS_RECEIVE     = `${HOME}/.local/bin/mms-receive`;
 
-const STATE_DIR    = `${HOME}/.config/openclaw-termux-channel`;
-const STATE_FILE   = join(STATE_DIR, "state.json");
 const SESSIONS_FILE   = `${HOME}/.openclaw/agents/main/sessions/sessions.json`;
 const OPENCLAW_CONFIG = `${HOME}/.openclaw/openclaw.json`;
 
@@ -44,33 +48,12 @@ const MIME_MAP = {
 function checkDependencies() {
   const deps = [
     [TERMUX_SMS_SEND, "termux-sms-send (termux-sms)", "https://github.com/woodmanlegion/termux-sms"],
-    [MMS_RECEIVE,     "mms-receive (termux-sms)",      "https://github.com/woodmanlegion/termux-sms"],
   ];
   const missing = deps.filter(([path]) => !existsSync(path));
   if (missing.length > 0) {
     for (const [path, name, url] of missing)
       process.stderr.write(`[termux-channel] MISSING: ${name} not found at ${path} — install: ${url}\n`);
     throw new Error(`[termux-channel] missing: ${missing.map(([, n]) => n).join(", ")}`);
-  }
-}
-
-// ── Persisted state ───────────────────────────────────────────────────────────
-
-function loadState() {
-  try {
-    return JSON.parse(readFileSync(STATE_FILE, "utf8"));
-  } catch {
-    // null, not {-1, 0} -- a missing state file means "never
-    // initialized," not "start from the beginning of history." See
-    // ensureFreshState() below: the same bug already found and fixed in
-    // termux-sms-poll (woodmanlegion/termux-sms) existed here too, and
-    // caused a real incident -- a fresh-enabled channel replayed every
-    // old message in the SIM's inbox as if it had just arrived, dispatched
-    // each one to the agent, and (with allowFrom == myNumber during
-    // self-testing) each reply became a new inbound message, becoming a
-    // self-sustaining reply loop that sent real SMS continuously until
-    // manually stopped.
-    return null;
   }
 }
 
@@ -149,15 +132,6 @@ function clearSessionModel() {
   }
 }
 
-function saveState(state) {
-  try {
-    mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify(state));
-  } catch (err) {
-    process.stderr.write(`[termux-channel] state save error: ${err?.message}\n`);
-  }
-}
-
 // ── SSE broadcast ─────────────────────────────────────────────────────────────
 
 const sseClients = new Set();
@@ -184,51 +158,6 @@ const { setRuntime } = createPluginRuntimeStore({
   pluginId: "termux-sms-channel",
   errorMessage: "SMS/MMS runtime not initialized",
 });
-
-let pollTimer = null;
-let state     = { smsHighWater: -1, mmsHighWater: 0 };
-let stateInitialized = false;
-let freshStateInitPromise = null;
-
-// First run: start from "now" -- the current latest id on each side --
-// instead of replaying the full backlog. Shared by pollSms/pollMms so
-// only one probe runs even if both fire on the same tick.
-async function ensureFreshState() {
-  if (stateInitialized) return;
-  if (!freshStateInitPromise) {
-    freshStateInitPromise = (async () => {
-      let smsHW = -1, mmsHW = 0;
-      try {
-        const latest = await fetchSmsInbox(1);
-        if (latest.length > 0) {
-          smsHW = Math.max(...latest.map((m) => Number(m._id ?? -1)));
-        }
-      } catch (err) {
-        process.stderr.write(`[termux-channel] fresh-state SMS probe failed: ${err?.message}\n`);
-      }
-      try {
-        const { stdout } = await execFileP(
-          MMS_RECEIVE,
-          ["--limit", "1", "--no-save", "--json"],
-          { timeout: 45_000 }
-        );
-        const parsed = JSON.parse(stdout);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          mmsHW = Math.max(...parsed.map((m) => Number(m.id ?? 0)));
-        }
-      } catch (err) {
-        process.stderr.write(`[termux-channel] fresh-state MMS probe failed: ${err?.message}\n`);
-      }
-      state = { smsHighWater: smsHW, mmsHighWater: mmsHW };
-      saveState(state);
-      stateInitialized = true;
-      process.stderr.write(
-        `[termux-channel] first run -- starting from current (smsHW=${state.smsHighWater}, mmsHW=${state.mmsHighWater}), not replaying history\n`
-      );
-    })();
-  }
-  await freshStateInitPromise;
-}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -391,97 +320,74 @@ async function handleSlashCommand(body, replyTo, runtime) {
   }
 }
 
-// ── SMS inbound ───────────────────────────────────────────────────────────────
+// ── SMS inbound (consumer -- termux-sms-poll already fetched this) ──────────
 
-async function fetchSmsInbox(limit = 20) {
-  const { stdout } = await execFileP(
-    "termux-sms-list",
-    ["-l", String(limit), "-t", "inbox"],
-    { timeout: 10_000 }
-  );
-  const parsed = JSON.parse(stdout);
-  return Array.isArray(parsed) ? parsed : [];
-}
+async function processSmsMessage(msg, runtime) {
+  const cfg      = getConfig(runtime);
+  const smsCfg   = getChannelConfig(runtime);
+  const myNumber = String(smsCfg.myNumber ?? "").trim();
 
-async function pollSms(runtime) {
-  await ensureFreshState();
-  let messages;
-  try { messages = await fetchSmsInbox(20); } catch { return; }
+  const id     = msg.id;
+  const sender = String(msg.sender ?? "").trim();
+  const body   = String(msg.body ?? "").trim();
+  if (!sender || !body) return;
 
-  const cfg       = getConfig(runtime);
-  const smsCfg    = getChannelConfig(runtime);
-  const myNumber  = String(smsCfg.myNumber ?? "").trim();
-  const ordered   = [...messages].reverse();
-  let changed     = false;
-
-  for (const msg of ordered) {
-    const id = msg._id ?? -1;
-    if (id <= state.smsHighWater) continue;
-    state.smsHighWater = id;
-    changed = true;
-
-    const sender = String(msg.number ?? msg.address ?? "").trim();
-    const body   = String(msg.body ?? "").trim();
-    if (!sender || !body) continue;
-
-    const canonicalReplyTo = resolveSecondary(sender, smsCfg);
-    if (canonicalReplyTo) {
-      const warn = String(smsCfg.secondaryWarning ?? "").trim();
-      if (warn) sendSms(sender, warn).catch(() => {});
-    } else if (!isAllowed(sender, smsCfg)) {
-      const reject = String(smsCfg.rejectMessage ?? "").trim();
-      if (reject) sendSms(sender, reject).catch(() => {});
-      continue;
-    }
-
-    const replyTo   = canonicalReplyTo ?? sender;
-    const timestamp = new Date(typeof msg.date === "number" ? msg.date : Date.now()).toISOString();
-
-    logEntry({ type: "inbound", sender, text: body, timestamp });
-
-    try {
-      if (await handleSlashCommand(body, replyTo, runtime)) continue;
-    } catch (err) {
-      process.stderr.write(`[termux-channel] slash command error: ${err?.message ?? err}\n`);
-      continue;
-    }
-
-    try {
-      await dispatchInboundDirectDmWithRuntime({
-        cfg,
-        channel: "termux-sms-channel",
-        accountId: "default",
-        peer: replyTo,
-        runtime,
-        channelLabel: "SMS",
-        conversationLabel: replyTo,
-        rawBody: body,
-        bodyForAgent: body,
-        commandBody: body,
-        commandAuthorized: false,
-        senderAddress: myNumber,
-        recipientAddress: replyTo,
-        senderId: sender,
-        messageId: String(id),
-        timestamp: new Date(timestamp),
-        deliver: async (payload) => {
-          const text = String(payload?.text ?? "").trim();
-          if (text) {
-            logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
-            await sendSms(replyTo, text);
-          }
-          return {};
-        },
-      });
-    } catch (err) {
-      process.stderr.write(`[termux-channel] SMS dispatch error ${sender}: ${err?.message ?? err}\n`);
-    }
+  const canonicalReplyTo = resolveSecondary(sender, smsCfg);
+  if (canonicalReplyTo) {
+    const warn = String(smsCfg.secondaryWarning ?? "").trim();
+    if (warn) sendSms(sender, warn).catch(() => {});
+  } else if (!isAllowed(sender, smsCfg)) {
+    const reject = String(smsCfg.rejectMessage ?? "").trim();
+    if (reject) sendSms(sender, reject).catch(() => {});
+    return;
   }
 
-  if (changed) saveState(state);
+  const replyTo = canonicalReplyTo ?? sender;
+  const parsedDate = new Date(msg.date);
+  const timestamp  = Number.isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString();
+
+  logEntry({ type: "inbound", sender, text: body, timestamp });
+
+  try {
+    if (await handleSlashCommand(body, replyTo, runtime)) return;
+  } catch (err) {
+    process.stderr.write(`[termux-channel] slash command error: ${err?.message ?? err}\n`);
+    return;
+  }
+
+  try {
+    await dispatchInboundDirectDmWithRuntime({
+      cfg,
+      channel: "termux-sms-channel",
+      accountId: "default",
+      peer: replyTo,
+      runtime,
+      channelLabel: "SMS",
+      conversationLabel: replyTo,
+      rawBody: body,
+      bodyForAgent: body,
+      commandBody: body,
+      commandAuthorized: false,
+      senderAddress: myNumber,
+      recipientAddress: replyTo,
+      senderId: sender,
+      messageId: String(id),
+      timestamp: new Date(timestamp),
+      deliver: async (payload) => {
+        const text = String(payload?.text ?? "").trim();
+        if (text) {
+          logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
+          await sendSms(replyTo, text);
+        }
+        return {};
+      },
+    });
+  } catch (err) {
+    process.stderr.write(`[termux-channel] SMS dispatch error ${sender}: ${err?.message ?? err}\n`);
+  }
 }
 
-// ── MMS inbound ───────────────────────────────────────────────────────────────
+// ── MMS inbound (consumer -- termux-sms-poll already fetched + saved parts) ──
 
 const IMAGE_MIME_RE = /^image\//i;
 
@@ -540,143 +446,158 @@ async function runHook(hookScript, mime, savedPath) {
   }
 }
 
-async function pollMms(runtime) {
-  await ensureFreshState();
+async function processMmsMessage(mms, runtime) {
   const smsCfg     = getChannelConfig(runtime);
   const cfg        = getConfig(runtime);
   const myNumber   = String(smsCfg.myNumber ?? "").trim();
-  const mediaDir   = smsCfg.mediaDir || `${HOME}/.openclaw/workspace/media/inbound`;
+  // mediaDir is no longer read here -- termux-sms-poll already fetched
+  // and saved these parts using ~/.config/termux-sms/config's own
+  // SAVE_DIR before this ever runs. channels.termux-sms-channel.mediaDir
+  // is superseded; left in the config schema for now, just unused.
   const hookScript = smsCfg.hookScript || null;
 
-  let messages;
-  try {
-    const { stdout, stderr } = await execFileP(
-      MMS_RECEIVE,
-      ["--since", String(state.mmsHighWater), "--limit", "3", "--oldest-first", "--save", mediaDir, "--json"],
-      { timeout: 120_000 }
-    );
-    if (stderr) process.stderr.write(`[termux-channel] mms-receive stderr: ${stderr}\n`);
-    messages = JSON.parse(stdout);
-  } catch (err) {
-    process.stderr.write(`[termux-channel] mms-receive failed: ${err?.message ?? err}\n`);
+  const sender = String(mms.sender ?? "").trim();
+  if (!sender) return;
+
+  const canonicalReplyTo = resolveSecondary(sender, smsCfg);
+  if (canonicalReplyTo) {
+    const warn = String(smsCfg.secondaryWarning ?? "").trim();
+    if (warn) sendSms(sender, warn).catch(() => {});
+  } else if (!isAllowed(sender, smsCfg)) {
+    const reject = String(smsCfg.rejectMessage ?? "").trim();
+    if (reject) sendSms(sender, reject).catch(() => {});
     return;
   }
 
-  if (!messages.length) return;
+  const replyTo   = canonicalReplyTo ?? sender;
+  const timestamp = new Date(mms.date * 1000).toISOString();
 
-  let changed = false;
-
-  for (const mms of messages) {
-    if (mms.id > state.mmsHighWater) {
-      state.mmsHighWater = mms.id;
-      changed = true;
-    }
-
-    const sender = String(mms.sender ?? "").trim();
-    if (!sender) continue;
-
-    const canonicalReplyTo = resolveSecondary(sender, smsCfg);
-    if (canonicalReplyTo) {
-      const warn = String(smsCfg.secondaryWarning ?? "").trim();
-      if (warn) sendSms(sender, warn).catch(() => {});
-    } else if (!isAllowed(sender, smsCfg)) {
-      const reject = String(smsCfg.rejectMessage ?? "").trim();
-      if (reject) sendSms(sender, reject).catch(() => {});
-      continue;
-    }
-
-    const replyTo  = canonicalReplyTo ?? sender;
-    const timestamp = new Date(mms.date * 1000).toISOString();
-
-    for (const part of mms.parts) {
-      if (part.saved_path && hookScript) {
-        runHook(hookScript, part.mime, part.saved_path).catch(() => {});
-      }
-    }
-
-    // Log inbound MMS — include image parts for the viewer
-    const imageParts = mms.parts.filter(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
-    const textParts  = mms.parts.filter(p => p.text);
-    logEntry({
-      type:      "inbound",
-      sender,
-      text:      textParts.map(p => p.text).join("\n") || null,
-      images:    imageParts.map(p => ({ path: p.saved_path, mime: p.mime })),
-      timestamp,
-    });
-
-    const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
-    const { bodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
-
-    const hasImages = mms.parts.some(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
-    if (hasImages) {
-      const currentModel = getCurrentModel();
-      const allModels    = listModels();
-      const activeEntry  = allModels.find(m => m.id === currentModel);
-      if (!activeEntry?.vision) {
-        const pick = bestVisionModel();
-        if (!pick) {
-          await sendSms(replyTo, "Image received but no vision models are configured.");
-          continue;
-        }
-        const [vProv, ...vRest] = pick.id.split("/");
-        setSessionModel(vProv, vRest.join("/"));
-      }
-    }
-
-    try {
-      await dispatchInboundDirectDmWithRuntime({
-        cfg,
-        channel: "termux-sms-channel",
-        accountId: "default",
-        peer: replyTo,
-        runtime,
-        channelLabel: "SMS",
-        conversationLabel: replyTo,
-        rawBody: body,
-        bodyForAgent,
-        commandBody: body,
-        commandAuthorized: false,
-        senderAddress: myNumber,
-        recipientAddress: replyTo,
-        senderId: sender,
-        messageId: `mms-${mms.id}`,
-        timestamp: new Date(timestamp),
-        extraContext,
-        deliver: async (payload) => {
-          const text = String(payload?.text ?? "").trim();
-          if (text) {
-            logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
-            await sendSms(replyTo, text);
-          }
-          return {};
-        },
-      });
-    } catch (err) {
-      process.stderr.write(`[termux-channel] MMS dispatch error ${sender}: ${err?.message ?? err}\n`);
+  for (const part of mms.parts) {
+    if (part.saved_path && hookScript) {
+      runHook(hookScript, part.mime, part.saved_path).catch(() => {});
     }
   }
 
-  if (changed) saveState(state);
+  const imageParts = mms.parts.filter(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
+  const textParts  = mms.parts.filter(p => p.text);
+  logEntry({
+    type:      "inbound",
+    sender,
+    text:      textParts.map(p => p.text).join("\n") || null,
+    images:    imageParts.map(p => ({ path: p.saved_path, mime: p.mime })),
+    timestamp,
+  });
+
+  const body      = `[MMS received — ${mms.parts.length} part(s)]:\n${formatMmsParts(mms.parts)}`;
+  const { bodyForAgent, extraContext } = buildMmsAgentPayload(mms, mms.parts);
+
+  const hasImages = mms.parts.some(p => IMAGE_MIME_RE.test(p.mime ?? "") && p.saved_path);
+  if (hasImages) {
+    const currentModel = getCurrentModel();
+    const allModels    = listModels();
+    const activeEntry  = allModels.find(m => m.id === currentModel);
+    if (!activeEntry?.vision) {
+      const pick = bestVisionModel();
+      if (!pick) {
+        await sendSms(replyTo, "Image received but no vision models are configured.");
+        return;
+      }
+      const [vProv, ...vRest] = pick.id.split("/");
+      setSessionModel(vProv, vRest.join("/"));
+    }
+  }
+
+  try {
+    await dispatchInboundDirectDmWithRuntime({
+      cfg,
+      channel: "termux-sms-channel",
+      accountId: "default",
+      peer: replyTo,
+      runtime,
+      channelLabel: "SMS",
+      conversationLabel: replyTo,
+      rawBody: body,
+      bodyForAgent,
+      commandBody: body,
+      commandAuthorized: false,
+      senderAddress: myNumber,
+      recipientAddress: replyTo,
+      senderId: sender,
+      messageId: `mms-${mms.id}`,
+      timestamp: new Date(timestamp),
+      extraContext,
+      deliver: async (payload) => {
+        const text = String(payload?.text ?? "").trim();
+        if (text) {
+          logEntry({ type: "outbound", text, timestamp: new Date().toISOString() });
+          await sendSms(replyTo, text);
+        }
+        return {};
+      },
+    });
+  } catch (err) {
+    process.stderr.write(`[termux-channel] MMS dispatch error ${sender}: ${err?.message ?? err}\n`);
+  }
 }
 
-// ── Polling loop ──────────────────────────────────────────────────────────────
+// ── Inbound webhook (termux-sms-poll's handler forwards here) ───────────────
+// Replaces the old self-polling setInterval entirely. termux-sms-poll is
+// the one and only thing that polls the SIM now; this route just
+// receives what it already found. Responds immediately (202) and
+// processes fire-and-forget, rather than awaiting a full agent turn
+// inside the HTTP response -- that keeps the calling handler script's
+// own curl well inside termux-sms-poll's 30s per-handler timeout
+// regardless of how long the actual model response takes.
 
-function startPolling(runtime) {
-  const cfg        = getConfig(runtime);
-  const intervalMs = Number(cfg?.channels?.["termux-sms-channel"]?.pollIntervalMs ?? 5_000);
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk) => { data += chunk; });
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
 
-  process.stderr.write(`[termux-channel] starting (interval=${intervalMs}ms, smsHW=${state.smsHighWater}, mmsHW=${state.mmsHighWater})\n`);
+function registerInboundWebhookRoute(runtime) {
+  registerPluginHttpRoute({
+    pluginId: "termux-sms-channel",
+    path:     "/termux-sms-channel/inbound",
+    auth:     "none",
+    handler:  (req, res) => {
+      if (req.method !== "POST") return false;
+      readRequestBody(req)
+        .then((raw) => {
+          let kind, message;
+          try {
+            ({ kind, message } = JSON.parse(raw));
+          } catch (err) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `bad json: ${err?.message}` }));
+            return;
+          }
+          res.writeHead(202, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ accepted: true }));
 
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(() => {
-    pollSms(runtime).catch(err =>
-      process.stderr.write(`[termux-channel] SMS poll error: ${err?.message}\n`)
-    );
-    pollMms(runtime).catch(err =>
-      process.stderr.write(`[termux-channel] MMS poll error: ${err?.message}\n`)
-    );
-  }, intervalMs);
+          if (kind === "sms") {
+            processSmsMessage(message, runtime).catch((err) =>
+              process.stderr.write(`[termux-channel] inbound SMS processing error: ${err?.message}\n`)
+            );
+          } else if (kind === "mms") {
+            processMmsMessage(message, runtime).catch((err) =>
+              process.stderr.write(`[termux-channel] inbound MMS processing error: ${err?.message}\n`)
+            );
+          } else {
+            process.stderr.write(`[termux-channel] inbound webhook: unknown kind "${kind}"\n`);
+          }
+        })
+        .catch((err) => {
+          process.stderr.write(`[termux-channel] inbound webhook error: ${err?.message}\n`);
+          try { res.writeHead(500); res.end("error"); } catch {}
+        });
+      return true;
+    },
+  });
+  process.stderr.write("[termux-channel] inbound webhook registered at /termux-sms-channel/inbound\n");
 }
 
 // ── Eavesdrop HTTP routes ─────────────────────────────────────────────────────
@@ -755,14 +676,9 @@ export function setSmsRuntime(runtime) {
   try {
     process.stderr.write("[termux-channel] setSmsRuntime called\n");
     checkDependencies();
-    const loaded = loadState();
-    if (loaded !== null) {
-      state = loaded;
-      stateInitialized = true;
-    }
     setRuntime(runtime);
     registerEavesdropRoutes();
-    startPolling(runtime);
+    registerInboundWebhookRoute(runtime);
   } catch (err) {
     process.stderr.write(`[termux-channel] ERROR in setSmsRuntime: ${err?.message}\n`);
     throw err;

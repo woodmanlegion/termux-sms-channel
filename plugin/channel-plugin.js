@@ -98,11 +98,13 @@ const smsBase = createChannelPluginBase({
   doctor: {
     collectPreviewWarnings: () => {
       const HOME = process.env.HOME ?? "/data/data/com.termux/files/home";
-      // Consolidated into woodmanlegion/termux-sms -- see runtime-setter.js's
-      // own comment on TERMUX_SMS_SEND/MMS_RECEIVE for why these paths moved.
+      // Consolidated into woodmanlegion/termux-sms. As of 2026-10-04 this
+      // plugin no longer calls mms-receive directly -- termux-sms-poll
+      // does (it's the sole poller now), and hands this plugin the
+      // already-fetched result via the /termux-sms-channel/inbound
+      // webhook. Only the send side is a direct dependency here.
       const deps = [
         [`${HOME}/.local/bin/termux-sms-send`, "termux-sms-send (termux-sms)", "https://github.com/woodmanlegion/termux-sms"],
-        [`${HOME}/.local/bin/mms-receive`, "mms-receive (termux-sms)", "https://github.com/woodmanlegion/termux-sms"],
       ];
       return deps
         .filter(([path]) => !existsSync(path))

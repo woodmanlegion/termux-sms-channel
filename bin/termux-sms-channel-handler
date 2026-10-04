@@ -1,0 +1,44 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# termux-sms-channel-handler — registered into
+# ~/.config/termux-sms/handlers.d/ by `tclaw sms-channel install`.
+#
+# termux-sms-poll (woodmanlegion/termux-sms) is the one and only thing
+# that polls the SIM. This script is just the trigger: it forwards each
+# new message it's handed to the openclaw gateway's own webhook route
+# (/termux-sms-channel/inbound), where the actual allowFrom/secondary-
+# number/slash-command/agent-dispatch logic runs -- unchanged from when
+# this plugin polled itself, just invoked differently now.
+#
+# Called by termux-sms-poll as: termux-sms-channel-handler <sms|mms>
+# with the message JSON on stdin. Must return well inside
+# termux-sms-poll's 30s per-handler timeout -- the webhook responds
+# immediately (202) and processes the actual message asynchronously, so
+# this is just a quick local POST, not a wait for a full agent turn.
+
+set -euo pipefail
+
+KIND="${1:?usage: termux-sms-channel-handler <sms|mms> (message JSON on stdin)}"
+MESSAGE_JSON="$(cat)"
+OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+
+PORT=$(python3 -c "
+import json
+try:
+    with open('$OPENCLAW_CONFIG') as f:
+        print(json.load(f).get('gateway', {}).get('port', 18789))
+except Exception:
+    print(18789)
+" 2>/dev/null || echo 18789)
+
+PAYLOAD=$(python3 -c "
+import json, sys
+kind = sys.argv[1]
+message = json.loads(sys.argv[2])
+print(json.dumps({'kind': kind, 'message': message}))
+" "$KIND" "$MESSAGE_JSON")
+
+curl -s -X POST "http://127.0.0.1:${PORT}/termux-sms-channel/inbound" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" \
+    --max-time 10 \
+    -o /dev/null
